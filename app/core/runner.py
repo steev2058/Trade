@@ -9,9 +9,12 @@ from app.notifiers.telegram_notifier import TelegramNotifier
 from app.notifiers.telegram_controller import TelegramController
 from app.storage.audit import AuditStore
 from app.risk.engine import RiskEngine
-from app.strategies.scalping import ScalpingStrategy
-from app.strategies.swing import SwingStrategy
 from app.strategies.news import NewsStrategy
+from app.strategies.scalper import ScalperStrategy
+from app.strategies.smc_ict import SmcIctStrategy
+from app.strategies.adaptive_weighting import AdaptiveWeightingStrategy
+from app.strategies.london_ny_session import LondonNySessionStrategy
+from app.strategies.regime_switcher import RegimeSwitcher
 
 
 class TradingRunner:
@@ -30,6 +33,10 @@ class TradingRunner:
                 "pause": self._pause,
                 "resume": self._resume,
                 "switch_mode": self._switch_mode,
+                "positions": self._positions_text,
+                "balance": self._balance_text,
+                "pnl": self._pnl_text,
+                "close_all": self._close_all,
             },
         )
         self.risk = RiskEngine(
@@ -38,17 +45,55 @@ class TradingRunner:
             settings.max_trades_per_day,
             settings.max_concurrent_positions,
         )
-        self.broker = MT5Adapter(settings.mt5_login, settings.mt5_password, settings.mt5_server, settings.mt5_path)
+        self.broker = MT5Adapter(
+            settings.mt5_login,
+            settings.mt5_password,
+            settings.mt5_server,
+            settings.mt5_path,
+            mode=self.mode,
+        )
+        self.regime = RegimeSwitcher()
         self.strategies = []
-        if settings.enable_scalping:
-            self.strategies.append(ScalpingStrategy())
-        if settings.enable_swing:
-            self.strategies.append(SwingStrategy())
+        if settings.enable_smc_ict:
+            self.strategies.append(SmcIctStrategy())
+        if settings.enable_scalper:
+            self.strategies.append(ScalperStrategy())
         if settings.enable_news:
             self.strategies.append(NewsStrategy())
+        if settings.enable_adaptive_weighting:
+            self.strategies.append(AdaptiveWeightingStrategy())
+        if settings.enable_london_ny_session:
+            self.strategies.append(LondonNySessionStrategy())
 
     def _status_text(self) -> str:
         return f"mode={self.mode} | paused={self.paused} | strategies={len(self.strategies)}"
+
+    def _positions_text(self) -> str:
+        positions = self.broker.get_positions()
+        if not positions:
+            return f"positions=0 | mode={self.mode}"
+        head = [f"positions={len(positions)} | mode={self.mode}"]
+        for p in positions[:10]:
+            head.append(
+                f"#{p.get('ticket')} {p.get('symbol')} {p.get('type')} vol={p.get('volume')} pnl={p.get('profit')}"
+            )
+        return "\n".join(head)
+
+    def _balance_text(self) -> str:
+        bal = self.broker.get_balance()
+        return (
+            f"mode={bal.get('mode')} | balance={bal.get('balance')} {bal.get('currency')} "
+            f"| equity={bal.get('equity')}"
+        )
+
+    def _pnl_text(self) -> str:
+        pnl = self.broker.get_pnl()
+        return f"mode={pnl.get('mode')} | positions={pnl.get('positions')} | open_pnl={pnl.get('open_pnl')}"
+
+    def _close_all(self) -> str:
+        res = self.broker.close_all_positions()
+        self.audit.log("control_close_all", res)
+        return f"close_all result: {res}"
 
     def _pause(self):
         self.paused = True
@@ -64,11 +109,36 @@ class TradingRunner:
             return
         if mode == self.mode:
             return
+        self.mode = mode
+        self.broker.set_mode(mode)
         if mode == "live":
             self.broker.connect()
             self.audit.log("broker_connected", {"server": settings.mt5_server})
-        self.mode = mode
         self.audit.log("control_mode_switch", {"mode": self.mode})
+
+    def _build_market_context(self) -> dict:
+        now_utc = datetime.now(timezone.utc)
+        hour = now_utc.hour
+
+        if 7 <= hour < 12:
+            session = "london"
+        elif 12 <= hour < 16:
+            session = "london_ny_overlap"
+        elif 16 <= hour < 21:
+            session = "new_york"
+        else:
+            session = "off_hours"
+
+        return {
+            "symbol": settings.default_symbol,
+            "session": session,
+            "volatility": "medium",
+            "news_high_impact": False,
+            "bias": "neutral",
+            "micro_momentum": "flat",
+            "session_breakout": "none",
+            "weighted_votes": {"buy": 0.0, "sell": 0.0},
+        }
 
     async def start(self):
         self.log.info("Starting Linkat MJ Trader | mode=%s", self.mode)
@@ -88,7 +158,7 @@ class TradingRunner:
                 stats = {
                     "daily_loss_pct": 0,
                     "trades_today": 0,
-                    "open_positions": 0,
+                    "open_positions": len(self.broker.get_positions()),
                 }
                 if self.paused:
                     pass
@@ -97,10 +167,22 @@ class TradingRunner:
                     if not allowed:
                         self.audit.log("risk_block", {"reason": reason})
                     else:
-                        for st in self.strategies:
-                            signals = await st.generate({})
+                        market = self._build_market_context()
+                        regime = self.regime.select(market, self.strategies)
+                        self.audit.log("regime", {"active": regime.active_strategy_names, "weights": regime.weights})
+
+                        active = [s for s in self.strategies if s.name in regime.active_strategy_names]
+                        for st in active:
+                            signals = await st.generate(market)
                             if signals:
-                                self.audit.log("signals", {"strategy": st.name, "count": len(signals)})
+                                self.audit.log(
+                                    "signals",
+                                    {
+                                        "strategy": st.name,
+                                        "count": len(signals),
+                                        "weight": regime.weights.get(st.name, 1.0),
+                                    },
+                                )
 
                 if now - last_hb >= settings.heartbeat_seconds:
                     last_hb = now

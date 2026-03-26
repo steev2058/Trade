@@ -25,9 +25,13 @@ class Settings(BaseSettings):
     max_trades_per_day: int = 20
     max_concurrent_positions: int = 5
 
-    enable_scalping: bool = True
-    enable_swing: bool = True
+    default_symbol: str = "EURUSD"
+
+    enable_smc_ict: bool = True
+    enable_scalper: bool = True
     enable_news: bool = True
+    enable_adaptive_weighting: bool = True
+    enable_london_ny_session: bool = True
 
     tick_interval_seconds: int = 3
     heartbeat_seconds: int = 60
