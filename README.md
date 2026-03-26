@@ -19,6 +19,12 @@ Production-oriented trading agent scaffold with MT5 + Telegram integration, audi
 4. `pip install -r requirements.txt`
 5. `python -m app.main --mode paper`
 
+## VPS One-Command Deploy
+```bash
+bash scripts/deploy_vps.sh https://github.com/steev2058/Trade.git /opt/linkat-mj-trader
+```
+Detailed guide: `QUICKSTART_VPS.md`
+
 ## Live mode
 Use only after verifying in paper mode:
 
