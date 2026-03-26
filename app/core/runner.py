@@ -6,6 +6,7 @@ from app.core.settings import settings
 from app.core.logging import setup_logging
 from app.brokers.mt5_adapter import MT5Adapter
 from app.notifiers.telegram_notifier import TelegramNotifier
+from app.notifiers.telegram_controller import TelegramController
 from app.storage.audit import AuditStore
 from app.risk.engine import RiskEngine
 from app.strategies.scalping import ScalpingStrategy
@@ -20,6 +21,17 @@ class TradingRunner:
         self.mode = mode
         self.audit = AuditStore()
         self.notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
+        self.paused = False
+        self.controller = TelegramController(
+            settings.telegram_bot_token,
+            settings.telegram_chat_id,
+            callbacks={
+                "status": self._status_text,
+                "pause": self._pause,
+                "resume": self._resume,
+                "switch_mode": self._switch_mode,
+            },
+        )
         self.risk = RiskEngine(
             settings.max_risk_per_trade,
             settings.max_daily_loss,
@@ -35,10 +47,35 @@ class TradingRunner:
         if settings.enable_news:
             self.strategies.append(NewsStrategy())
 
+    def _status_text(self) -> str:
+        return f"mode={self.mode} | paused={self.paused} | strategies={len(self.strategies)}"
+
+    def _pause(self):
+        self.paused = True
+        self.audit.log("control_pause", {})
+
+    def _resume(self):
+        self.paused = False
+        self.audit.log("control_resume", {})
+
+    def _switch_mode(self, mode: str):
+        mode = (mode or "").lower().strip()
+        if mode not in {"paper", "live"}:
+            return
+        if mode == self.mode:
+            return
+        if mode == "live":
+            self.broker.connect()
+            self.audit.log("broker_connected", {"server": settings.mt5_server})
+        self.mode = mode
+        self.audit.log("control_mode_switch", {"mode": self.mode})
+
     async def start(self):
         self.log.info("Starting Linkat MJ Trader | mode=%s", self.mode)
         self.audit.log("startup", {"mode": self.mode})
         await self.notifier.send(f"🚀 Linkat MJ Trader started | mode={self.mode}")
+
+        await self.controller.start()
 
         if self.mode == "live":
             self.broker.connect()
@@ -53,14 +90,17 @@ class TradingRunner:
                     "trades_today": 0,
                     "open_positions": 0,
                 }
-                allowed, reason = self.risk.allow_trade(stats)
-                if not allowed:
-                    self.audit.log("risk_block", {"reason": reason})
+                if self.paused:
+                    pass
                 else:
-                    for st in self.strategies:
-                        signals = await st.generate({})
-                        if signals:
-                            self.audit.log("signals", {"strategy": st.name, "count": len(signals)})
+                    allowed, reason = self.risk.allow_trade(stats)
+                    if not allowed:
+                        self.audit.log("risk_block", {"reason": reason})
+                    else:
+                        for st in self.strategies:
+                            signals = await st.generate({})
+                            if signals:
+                                self.audit.log("signals", {"strategy": st.name, "count": len(signals)})
 
                 if now - last_hb >= settings.heartbeat_seconds:
                     last_hb = now

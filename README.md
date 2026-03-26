@@ -12,6 +12,18 @@ Production-oriented trading agent scaffold with MT5 + Telegram integration, audi
 - Guardrails for live mode (kill-switch, max trades/day, max concurrent positions)
 - Auto-reconnect loop and health heartbeat
 
+## Telegram Bot Control
+Set in `.env`:
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID` (your private chat id)
+
+Commands:
+- `/status`
+- `/pause`
+- `/resume`
+- `/paper`
+- `/live CONFIRM`
+
 ## Quick Start
 1. `cp .env.example .env`
 2. Fill credentials/secrets
