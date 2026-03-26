@@ -31,6 +31,10 @@ class TelegramController:
             "/resume - resume strategy execution\n"
             "/paper - switch mode to paper\n"
             "/live CONFIRM - switch mode to live\n"
+            "/positions - list open positions\n"
+            "/balance - account balance snapshot\n"
+            "/pnl - current open pnl snapshot\n"
+            "/close_all CONFIRM - close all positions (guarded)\n"
         )
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,6 +71,30 @@ class TelegramController:
         self.callbacks["switch_mode"]("live")
         await update.message.reply_text("Mode switched to live")
 
+    async def cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["positions"]())
+
+    async def cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["balance"]())
+
+    async def cmd_pnl(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["pnl"]())
+
+    async def cmd_close_all(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        arg = context.args[0] if context.args else ""
+        if arg != "CONFIRM":
+            await update.message.reply_text("Use: /close_all CONFIRM")
+            return
+        await update.message.reply_text(self.callbacks["close_all"]())
+
     async def start(self):
         if not self.enabled:
             return
@@ -77,6 +105,10 @@ class TelegramController:
         self.app.add_handler(CommandHandler("resume", self.cmd_resume))
         self.app.add_handler(CommandHandler("paper", self.cmd_paper))
         self.app.add_handler(CommandHandler("live", self.cmd_live))
+        self.app.add_handler(CommandHandler("positions", self.cmd_positions))
+        self.app.add_handler(CommandHandler("balance", self.cmd_balance))
+        self.app.add_handler(CommandHandler("pnl", self.cmd_pnl))
+        self.app.add_handler(CommandHandler("close_all", self.cmd_close_all))
         await self.app.initialize()
         await self.app.start()
         await self.app.updater.start_polling(drop_pending_updates=True)
