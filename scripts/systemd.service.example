@@ -1,0 +1,14 @@
+[Unit]
+Description=Linkat MJ Trader
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/linkat-mj-trader
+ExecStart=/opt/linkat-mj-trader/.venv/bin/python -m app.main --mode live --confirm-live YES_I_ACCEPT_LIVE_TRADING
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/linkat-mj-trader/.env
+
+[Install]
+WantedBy=multi-user.target
