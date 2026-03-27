@@ -53,7 +53,9 @@ class TelegramController:
             "• /sl_tp TICKET SL TP\n"
             "• /auto_on\n"
             "• /auto_off\n"
-            "• /report\n\n"
+            "• /report\n"
+            "• /symbols\n"
+            "• /set_symbols XAUUSD.m,BRENT.m,BTCUSD.m,ETHUSD.m\n\n"
             "أو استخدم الأزرار الجاهزة بالأسفل.",
             reply_markup=self.keyboard,
         )
@@ -207,6 +209,19 @@ class TelegramController:
             return await self._reject(update)
         await update.message.reply_text(self.callbacks["report"]())
 
+    async def cmd_symbols(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["symbols"]())
+
+    async def cmd_set_symbols(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        if len(context.args) < 1:
+            return await update.message.reply_text("Use: /set_symbols XAUUSD.m,BRENT.m,BTCUSD.m,ETHUSD.m")
+        csv_symbols = " ".join(context.args).replace(" ", "")
+        await update.message.reply_text(self.callbacks["set_symbols"](csv_symbols))
+
     async def start(self):
         if not self.enabled:
             return
@@ -228,6 +243,8 @@ class TelegramController:
         self.app.add_handler(CommandHandler("auto_on", self.cmd_auto_on))
         self.app.add_handler(CommandHandler("auto_off", self.cmd_auto_off))
         self.app.add_handler(CommandHandler("report", self.cmd_report))
+        self.app.add_handler(CommandHandler("symbols", self.cmd_symbols))
+        self.app.add_handler(CommandHandler("set_symbols", self.cmd_set_symbols))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_button_text))
         await self.app.initialize()
         await self.app.start()

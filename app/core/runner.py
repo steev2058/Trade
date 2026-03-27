@@ -33,6 +33,7 @@ class TradingRunner:
         self.auto_enabled = bool(settings.auto_trading_enabled)
         self.last_auto_ts = 0.0
         self.last_no_trade_notify_ts = 0.0
+        self.watch_symbols = [s.strip() for s in str(settings.watch_symbols or '').split(',') if s.strip()]
         self.price_history = defaultdict(lambda: deque(maxlen=200))
         self.day_start_balance = None
         self.day_key = datetime.now(timezone.utc).date().isoformat()
@@ -56,6 +57,8 @@ class TradingRunner:
                 "auto_on": self._auto_on,
                 "auto_off": self._auto_off,
                 "report": self._report,
+                "symbols": self._symbols_text,
+                "set_symbols": self._set_symbols,
             },
         )
         self.risk = RiskEngine(
@@ -157,6 +160,17 @@ class TradingRunner:
             f"open_pnl={pnl.get('open_pnl')}\n"
             f"auto={self.auto_enabled}"
         )
+
+    def _symbols_text(self) -> str:
+        return "watch_symbols=" + ",".join(self.watch_symbols or [settings.auto_default_symbol])
+
+    def _set_symbols(self, csv_symbols: str) -> str:
+        syms = [s.strip() for s in str(csv_symbols or '').split(',') if s.strip()]
+        if not syms:
+            return "Use: /set_symbols XAUUSD.m,BRENT.m,BTCUSD.m,ETHUSD.m"
+        self.watch_symbols = syms
+        self.audit.log("set_symbols", {"watch_symbols": self.watch_symbols})
+        return "✅ watch_symbols=" + ",".join(self.watch_symbols)
 
     def _pause(self):
         self.paused = True
@@ -406,9 +420,7 @@ class TradingRunner:
                             signals = []
                             chosen_market = market
                             if self.mode == "live" and len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
-                                watch_symbols = [s.strip() for s in str(settings.watch_symbols or '').split(',') if s.strip()]
-                                if not watch_symbols:
-                                    watch_symbols = [settings.auto_default_symbol]
+                                watch_symbols = self.watch_symbols or [settings.auto_default_symbol]
 
                                 for sym in watch_symbols:
                                     chosen_market = self._build_market_context(sym)
