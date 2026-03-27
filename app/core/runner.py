@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+from collections import defaultdict, deque
 
 from app.core.settings import settings
 from app.core.logging import setup_logging
@@ -30,6 +31,7 @@ class TradingRunner:
         self.paused = False
         self.auto_enabled = bool(settings.auto_trading_enabled)
         self.last_auto_ts = 0.0
+        self.price_history = defaultdict(lambda: deque(maxlen=200))
         self.controller = TelegramController(
             settings.telegram_bot_token,
             settings.telegram_chat_id,
@@ -170,6 +172,37 @@ class TradingRunner:
             self.audit.log("broker_connected", {"server": settings.mt5_server})
         self.audit.log("control_mode_switch", {"mode": self.mode})
 
+    def _ema(self, values, period: int):
+        if not values:
+            return 0.0
+        alpha = 2 / (period + 1)
+        ema = values[0]
+        for v in values[1:]:
+            ema = alpha * v + (1 - alpha) * ema
+        return float(ema)
+
+    def _rsi(self, values, period: int = 7):
+        if len(values) < period + 1:
+            return 50.0
+        gains, losses = [], []
+        for i in range(1, len(values)):
+            d = values[i] - values[i - 1]
+            gains.append(max(d, 0))
+            losses.append(max(-d, 0))
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return float(100 - (100 / (1 + rs)))
+
+    def _update_price_history(self):
+        ticks = self.broker.get_ticks() or {}
+        for sym, t in ticks.items():
+            px = float(t.get('last') or t.get('bid') or 0.0)
+            if px > 0:
+                self.price_history[sym].append(px)
+
     def _build_market_context(self) -> dict:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
@@ -183,15 +216,33 @@ class TradingRunner:
         else:
             session = "off_hours"
 
+        symbol = settings.auto_default_symbol or settings.default_symbol
+        series = list(self.price_history.get(symbol, []))
+        ema9 = self._ema(series, 9) if series else 0.0
+        ema21 = self._ema(series, 21) if series else 0.0
+        rsi7 = self._rsi(series, 7) if series else 50.0
+
+        bias = "neutral"
+        micro = "flat"
+        if ema9 > ema21:
+            bias = "bullish"
+            micro = "up"
+        elif ema9 < ema21:
+            bias = "bearish"
+            micro = "down"
+
         return {
-            "symbol": settings.default_symbol,
+            "symbol": symbol,
             "session": session,
             "volatility": "medium",
             "news_high_impact": False,
-            "bias": "neutral",
-            "micro_momentum": "flat",
+            "bias": bias,
+            "micro_momentum": micro,
             "session_breakout": "none",
             "weighted_votes": {"buy": 0.0, "sell": 0.0},
+            "ema9": ema9,
+            "ema21": ema21,
+            "rsi7": rsi7,
         }
 
     async def start(self):
@@ -210,6 +261,7 @@ class TradingRunner:
         while True:
             now = datetime.now(timezone.utc).timestamp()
             try:
+                self._update_price_history()
                 positions = self.broker.get_positions()
                 stats = {
                     "daily_loss_pct": 0,
