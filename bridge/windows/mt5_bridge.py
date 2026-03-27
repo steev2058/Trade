@@ -285,6 +285,7 @@ def main():
                 data = cmd.json()
                 c = data.get("command")
                 result = None
+                cmd_id = data.get('cmd_id')
                 if c == "close_all":
                     result = close_all()
                 elif c == "open":
@@ -294,6 +295,8 @@ def main():
                 elif c == "sl_tp":
                     result = modify_sl_tp(int(data.get('ticket', 0)), float(data.get('sl', 0)), float(data.get('tp', 0)))
                 if result is not None:
+                    if cmd_id:
+                        result['cmd_id'] = cmd_id
                     requests.post(f"{API_BASE}/bridge/result", headers=headers(), data=json.dumps(result), timeout=8)
         except Exception as e:
             try:

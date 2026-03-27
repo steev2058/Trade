@@ -1,5 +1,7 @@
 from tenacity import retry, stop_after_attempt, wait_fixed
 import requests
+import time
+import uuid
 
 try:
     import MetaTrader5 as mt5
@@ -144,21 +146,29 @@ class MT5Adapter:
 
     def _bridge_send(self, endpoint: str, payload: dict | None = None) -> dict:
         try:
+            cmd_id = uuid.uuid4().hex
+            body = dict(payload or {})
+            body["cmd_id"] = cmd_id
             r = requests.post(
                 f"{self.bridge_api_base}{endpoint}",
                 headers=self._bridge_headers(),
-                json=payload or {},
+                json=body,
                 timeout=5,
             )
             if not r.ok:
                 return {"ok": False, "note": f"bridge command failed: {r.status_code}"}
-            st = self._bridge_state() or {}
-            res = st.get("last_result")
-            if isinstance(res, dict):
-                out = {"mode": "bridge"}
-                out.update(res)
-                return out
-            return {"ok": True, "mode": "bridge", "note": "command sent"}
+
+            # wait briefly for matching result
+            for _ in range(10):
+                st = self._bridge_state() or {}
+                res = st.get("last_result")
+                if isinstance(res, dict) and res.get("cmd_id") == cmd_id:
+                    out = {"mode": "bridge"}
+                    out.update(res)
+                    return out
+                time.sleep(0.3)
+
+            return {"ok": True, "mode": "bridge", "note": "command sent", "cmd_id": cmd_id}
         except Exception as e:
             return {"ok": False, "mode": "bridge", "note": f"bridge error: {e}"}
 
