@@ -398,7 +398,18 @@ class TradingRunner:
                                     self.audit.log("auto_open", {"symbol": symbol, "side": side, "lot": settings.auto_default_lot, "signal": sig, "result": res})
                                     self.journal.append("auto_open", res, symbol=symbol, side=side, lot=settings.auto_default_lot, ticket=res.get("order") or "")
                                     self.last_auto_ts = now
-                                    await self.notifier.send(f"🤖 auto_open ({side} {symbol}): {res}")
+                                    meta = sig.get('meta', {}) if isinstance(sig, dict) else {}
+                                    reason_parts = []
+                                    if 'support' in meta and 'resistance' in meta:
+                                        reason_parts.append(f"SR({meta.get('support'):.2f}/{meta.get('resistance'):.2f})")
+                                    if isinstance(meta.get('fvg'), dict):
+                                        reason_parts.append(f"FVG-{meta['fvg'].get('type')}")
+                                    if 'ema9' in meta and 'ema21' in meta:
+                                        reason_parts.append(f"EMA9>{meta.get('ema9'):.2f} / EMA21>{meta.get('ema21'):.2f}")
+                                    if 'rsi7' in meta:
+                                        reason_parts.append(f"RSI7={meta.get('rsi7'):.2f}")
+                                    reason = ' | '.join(reason_parts) if reason_parts else 'signal-trigger'
+                                    await self.notifier.send(f"🤖 auto_open ({side} {symbol}) lot={settings.auto_default_lot}\nreason: {reason}\nresult: {res}")
 
                 if now - last_hb >= settings.heartbeat_seconds:
                     last_hb = now
