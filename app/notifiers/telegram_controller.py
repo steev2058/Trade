@@ -1,5 +1,5 @@
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 
 class TelegramController:
@@ -10,15 +10,16 @@ class TelegramController:
         self.app = Application.builder().token(token).build() if self.enabled else None
         self.keyboard = ReplyKeyboardMarkup(
             [
-                ["/status", "/balance"],
-                ["/positions", "/pnl"],
-                ["/pause", "/resume"],
-                ["/paper", "/live CONFIRM"],
-                ["/buy XAUUSD 0.01", "/sell XAUUSD 0.01"],
-                ["/close 123456", "/sl_tp 123456 2500 2600"],
+                ["📊 الحالة", "💰 الرصيد"],
+                ["📂 الصفقات", "📈 الربح/الخسارة"],
+                ["🟢 شراء ذهب 0.01", "🔴 بيع ذهب 0.01"],
+                ["🛑 اغلاق الكل", "⏸ إيقاف", "▶️ متابعة"],
+                ["🧪 وضع تجريبي", "⚡ وضع حي"],
+                ["ℹ️ المساعدة"],
             ],
             resize_keyboard=True,
             one_time_keyboard=False,
+            input_field_placeholder="اختر أمر من الأزرار أو اكتب /help",
         )
 
     def _is_allowed(self, update: Update) -> bool:
@@ -37,21 +38,55 @@ class TelegramController:
         if not self._is_allowed(update):
             return await self._reject(update)
         await update.message.reply_text(
-            "Commands:\n"
-            "/status - runtime status\n"
-            "/pause - pause strategy execution\n"
-            "/resume - resume strategy execution\n"
-            "/paper - switch mode to paper\n"
-            "/live CONFIRM - switch mode to live\n"
-            "/positions - list open positions\n"
-            "/balance - account balance snapshot\n"
-            "/pnl - current open pnl snapshot\n"
-            "/close_all CONFIRM - close all positions (guarded)\n"
-            "/buy SYMBOL LOT - open buy via bridge\n"
-            "/sell SYMBOL LOT - open sell via bridge\n"
-            "/close TICKET - close one position\n"
-            "/sl_tp TICKET SL TP - modify SL/TP\n"
+            "الأوامر المتاحة:\n"
+            "• /status\n"
+            "• /balance\n"
+            "• /positions\n"
+            "• /pnl\n"
+            "• /pause و /resume\n"
+            "• /paper و /live CONFIRM\n"
+            "• /close_all CONFIRM\n"
+            "• /buy SYMBOL LOT\n"
+            "• /sell SYMBOL LOT\n"
+            "• /close TICKET\n"
+            "• /sl_tp TICKET SL TP\n\n"
+            "أو استخدم الأزرار الجاهزة بالأسفل.",
+            reply_markup=self.keyboard,
         )
+
+    async def on_button_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        txt = (update.message.text or '').strip()
+
+        if txt == '📊 الحالة':
+            return await self.cmd_status(update, context)
+        if txt == '💰 الرصيد':
+            return await self.cmd_balance(update, context)
+        if txt == '📂 الصفقات':
+            return await self.cmd_positions(update, context)
+        if txt == '📈 الربح/الخسارة':
+            return await self.cmd_pnl(update, context)
+        if txt == '⏸ إيقاف':
+            return await self.cmd_pause(update, context)
+        if txt == '▶️ متابعة':
+            return await self.cmd_resume(update, context)
+        if txt == '🧪 وضع تجريبي':
+            return await self.cmd_paper(update, context)
+        if txt == '⚡ وضع حي':
+            context.args = ['CONFIRM']
+            return await self.cmd_live(update, context)
+        if txt == '🛑 اغلاق الكل':
+            context.args = ['CONFIRM']
+            return await self.cmd_close_all(update, context)
+        if txt == '🟢 شراء ذهب 0.01':
+            context.args = ['XAUUSD.m', '0.01']
+            return await self.cmd_buy(update, context)
+        if txt == '🔴 بيع ذهب 0.01':
+            context.args = ['XAUUSD.m', '0.01']
+            return await self.cmd_sell(update, context)
+        if txt == 'ℹ️ المساعدة':
+            return await self.cmd_help(update, context)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
@@ -165,6 +200,7 @@ class TelegramController:
         self.app.add_handler(CommandHandler("sell", self.cmd_sell))
         self.app.add_handler(CommandHandler("close", self.cmd_close))
         self.app.add_handler(CommandHandler("sl_tp", self.cmd_sl_tp))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_button_text))
         await self.app.initialize()
         await self.app.start()
         await self.app.updater.start_polling(drop_pending_updates=True)
