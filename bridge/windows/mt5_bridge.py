@@ -194,33 +194,57 @@ def close_ticket(ticket: int):
     positions = mt5.positions_get(ticket=int(ticket)) or []
     if not positions:
         return {"ok": False, "error": "ticket_not_found", "ticket": int(ticket)}
+
     p = positions[0]
     symbol = p.symbol
+    mt5.symbol_select(symbol, True)
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
-        return {"ok": False, "error": "no_tick", "ticket": int(ticket)}
+        return {"ok": False, "error": "no_tick", "ticket": int(ticket), "symbol": symbol}
+
     is_buy = int(p.type) == 0
     order_type = mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY
     price = tick.bid if is_buy else tick.ask
-    req = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": float(p.volume),
-        "type": order_type,
-        "position": int(p.ticket),
-        "price": float(price),
-        "deviation": 20,
-        "magic": 987654,
-        "comment": "bridge_close_ticket",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
-    res = mt5.order_send(req)
+
+    fill_candidates = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is not None and hasattr(symbol_info, 'filling_mode'):
+        fm = int(symbol_info.filling_mode)
+        if fm in fill_candidates:
+            fill_candidates = [fm] + [x for x in fill_candidates if x != fm]
+
+    last_ret = None
+    for fill_mode in fill_candidates:
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(p.volume),
+            "type": order_type,
+            "position": int(p.ticket),
+            "price": float(price),
+            "deviation": 20,
+            "magic": 987654,
+            "comment": "bridge_close_ticket",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": fill_mode,
+        }
+        res = mt5.order_send(req)
+        last_ret = res
+        if res is not None and int(getattr(res, 'retcode', -1)) == int(mt5.TRADE_RETCODE_DONE):
+            return {
+                "ok": True,
+                "retcode": int(getattr(res, 'retcode', -1)),
+                "comment": str(getattr(res, 'comment', 'done')),
+                "ticket": int(ticket),
+                "symbol": symbol,
+            }
+
     return {
-        "ok": bool(res is not None and int(getattr(res, 'retcode', -1)) == int(mt5.TRADE_RETCODE_DONE)),
-        "retcode": int(getattr(res, 'retcode', -1)) if res is not None else -1,
-        "comment": str(getattr(res, 'comment', 'order_send_failed')) if res is not None else 'order_send_failed',
+        "ok": False,
+        "retcode": int(getattr(last_ret, 'retcode', -1)) if last_ret is not None else -1,
+        "comment": str(getattr(last_ret, 'comment', 'order_send_failed')) if last_ret is not None else 'order_send_failed',
         "ticket": int(ticket),
+        "symbol": symbol,
     }
 
 
