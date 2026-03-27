@@ -63,6 +63,13 @@ All commands are authorized-chat only.
 - `/balance`
 - `/pnl`
 - `/close_all CONFIRM`
+- `/buy SYMBOL LOT`
+- `/sell SYMBOL LOT`
+- `/close TICKET`
+- `/sl_tp TICKET SL TP`
+- `/auto_on`
+- `/auto_off`
+- `/report`
 
 ## Environment Setup
 

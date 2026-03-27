@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     bridge_api_base: str = ""
     bridge_token: str = ""
 
+    auto_trading_enabled: bool = False
+    auto_default_symbol: str = "XAUUSD.m"
+    auto_default_lot: float = 0.01
+    auto_cooldown_seconds: int = 120
+    report_interval_seconds: int = 3600
+
     tick_interval_seconds: int = 3
     heartbeat_seconds: int = 60
 

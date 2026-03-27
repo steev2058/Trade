@@ -8,6 +8,7 @@ from app.brokers.mt5_adapter import MT5Adapter
 from app.notifiers.telegram_notifier import TelegramNotifier
 from app.notifiers.telegram_controller import TelegramController
 from app.storage.audit import AuditStore
+from app.storage.trade_journal import TradeJournal
 from app.risk.engine import RiskEngine
 from app.strategies.news import NewsStrategy
 from app.strategies.scalper import ScalperStrategy
@@ -23,8 +24,11 @@ class TradingRunner:
         self.log = logging.getLogger("runner")
         self.mode = mode
         self.audit = AuditStore()
+        self.journal = TradeJournal()
         self.notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
         self.paused = False
+        self.auto_enabled = bool(settings.auto_trading_enabled)
+        self.last_auto_ts = 0.0
         self.controller = TelegramController(
             settings.telegram_bot_token,
             settings.telegram_chat_id,
@@ -40,6 +44,9 @@ class TradingRunner:
                 "open": self._open_order,
                 "close": self._close_ticket,
                 "sl_tp": self._set_sl_tp,
+                "auto_on": self._auto_on,
+                "auto_off": self._auto_off,
+                "report": self._report,
             },
         )
         self.risk = RiskEngine(
@@ -71,7 +78,7 @@ class TradingRunner:
             self.strategies.append(LondonNySessionStrategy())
 
     def _status_text(self) -> str:
-        return f"mode={self.mode} | paused={self.paused} | strategies={len(self.strategies)}"
+        return f"mode={self.mode} | paused={self.paused} | auto={self.auto_enabled} | strategies={len(self.strategies)}"
 
     def _positions_text(self) -> str:
         positions = self.broker.get_positions()
@@ -98,22 +105,47 @@ class TradingRunner:
     def _close_all(self) -> str:
         res = self.broker.close_all_positions()
         self.audit.log("control_close_all", res)
+        self.journal.append("close_all", res)
         return f"close_all result: {res}"
 
     def _open_order(self, symbol: str, side: str, lot: float) -> str:
         res = self.broker.open_order(symbol, side, lot)
         self.audit.log("control_open", {"symbol": symbol, "side": side, "lot": lot, "result": res})
+        self.journal.append("open", res, symbol=symbol, side=side, lot=lot, ticket=res.get("order") or "")
         return f"open result: {res}"
 
     def _close_ticket(self, ticket: int) -> str:
         res = self.broker.close_ticket(ticket)
         self.audit.log("control_close", {"ticket": ticket, "result": res})
+        self.journal.append("close", res, ticket=ticket)
         return f"close result: {res}"
 
     def _set_sl_tp(self, ticket: int, sl: float, tp: float) -> str:
         res = self.broker.set_sl_tp(ticket, sl, tp)
         self.audit.log("control_sl_tp", {"ticket": ticket, "sl": sl, "tp": tp, "result": res})
         return f"sl_tp result: {res}"
+
+    def _auto_on(self) -> str:
+        self.auto_enabled = True
+        self.audit.log("auto_on", {})
+        return "✅ auto trading enabled"
+
+    def _auto_off(self) -> str:
+        self.auto_enabled = False
+        self.audit.log("auto_off", {})
+        return "🛑 auto trading disabled"
+
+    def _report(self) -> str:
+        bal = self.broker.get_balance()
+        pnl = self.broker.get_pnl()
+        return (
+            f"Report\n"
+            f"balance={bal.get('balance')} {bal.get('currency')}\n"
+            f"equity={bal.get('equity')}\n"
+            f"positions={pnl.get('positions')}\n"
+            f"open_pnl={pnl.get('open_pnl')}\n"
+            f"auto={self.auto_enabled}"
+        )
 
     def _pause(self):
         self.paused = True
@@ -172,13 +204,15 @@ class TradingRunner:
             self.audit.log("broker_connected", {"server": settings.mt5_server})
 
         last_hb = 0
+        last_report = 0
         while True:
             now = datetime.now(timezone.utc).timestamp()
             try:
+                positions = self.broker.get_positions()
                 stats = {
                     "daily_loss_pct": 0,
                     "trades_today": 0,
-                    "open_positions": len(self.broker.get_positions()),
+                    "open_positions": len(positions),
                 }
                 if self.paused:
                     pass
@@ -204,10 +238,23 @@ class TradingRunner:
                                     },
                                 )
 
+                        # simple auto execution gate (phase 4 baseline)
+                        if self.auto_enabled and self.mode == "live":
+                            if len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
+                                res = self.broker.open_order(settings.auto_default_symbol, "buy", settings.auto_default_lot)
+                                self.audit.log("auto_open", {"symbol": settings.auto_default_symbol, "lot": settings.auto_default_lot, "result": res})
+                                self.journal.append("auto_open", res, symbol=settings.auto_default_symbol, side="buy", lot=settings.auto_default_lot, ticket=res.get("order") or "")
+                                self.last_auto_ts = now
+                                await self.notifier.send(f"🤖 auto_open: {res}")
+
                 if now - last_hb >= settings.heartbeat_seconds:
                     last_hb = now
                     self.audit.log("heartbeat", {"mode": self.mode})
                     await self.notifier.send(f"💓 heartbeat | mode={self.mode}")
+
+                if now - last_report >= settings.report_interval_seconds:
+                    last_report = now
+                    await self.notifier.send("🧾 " + self._report())
 
             except Exception as e:
                 self.log.exception("loop error")

@@ -14,6 +14,7 @@ class TelegramController:
                 ["📂 الصفقات", "📈 الربح/الخسارة"],
                 ["🟢 شراء ذهب 0.01", "🔴 بيع ذهب 0.01"],
                 ["🛑 اغلاق الكل", "⏸ إيقاف", "▶️ متابعة"],
+                ["🤖 تشغيل تلقائي", "🛑 إيقاف تلقائي", "🧾 تقرير اليوم"],
                 ["🧪 وضع تجريبي", "⚡ وضع حي"],
                 ["ℹ️ المساعدة"],
             ],
@@ -49,7 +50,10 @@ class TelegramController:
             "• /buy SYMBOL LOT\n"
             "• /sell SYMBOL LOT\n"
             "• /close TICKET\n"
-            "• /sl_tp TICKET SL TP\n\n"
+            "• /sl_tp TICKET SL TP\n"
+            "• /auto_on\n"
+            "• /auto_off\n"
+            "• /report\n\n"
             "أو استخدم الأزرار الجاهزة بالأسفل.",
             reply_markup=self.keyboard,
         )
@@ -85,6 +89,12 @@ class TelegramController:
         if txt == '🔴 بيع ذهب 0.01':
             context.args = ['XAUUSD.m', '0.01']
             return await self.cmd_sell(update, context)
+        if txt == '🤖 تشغيل تلقائي':
+            return await self.cmd_auto_on(update, context)
+        if txt == '🛑 إيقاف تلقائي':
+            return await self.cmd_auto_off(update, context)
+        if txt == '🧾 تقرير اليوم':
+            return await self.cmd_report(update, context)
         if txt == 'ℹ️ المساعدة':
             return await self.cmd_help(update, context)
 
@@ -182,6 +192,21 @@ class TelegramController:
         tp = float(context.args[2])
         await update.message.reply_text(self.callbacks["sl_tp"](ticket, sl, tp))
 
+    async def cmd_auto_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["auto_on"]())
+
+    async def cmd_auto_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["auto_off"]())
+
+    async def cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["report"]())
+
     async def start(self):
         if not self.enabled:
             return
@@ -200,6 +225,9 @@ class TelegramController:
         self.app.add_handler(CommandHandler("sell", self.cmd_sell))
         self.app.add_handler(CommandHandler("close", self.cmd_close))
         self.app.add_handler(CommandHandler("sl_tp", self.cmd_sl_tp))
+        self.app.add_handler(CommandHandler("auto_on", self.cmd_auto_on))
+        self.app.add_handler(CommandHandler("auto_off", self.cmd_auto_off))
+        self.app.add_handler(CommandHandler("report", self.cmd_report))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_button_text))
         await self.app.initialize()
         await self.app.start()
