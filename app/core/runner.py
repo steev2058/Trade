@@ -51,6 +51,8 @@ class TradingRunner:
             settings.mt5_server,
             settings.mt5_path,
             mode=self.mode,
+            bridge_api_base=settings.bridge_api_base,
+            bridge_token=settings.bridge_token,
         )
         self.regime = RegimeSwitcher()
         self.strategies = []

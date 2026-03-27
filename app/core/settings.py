@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     enable_adaptive_weighting: bool = True
     enable_london_ny_session: bool = True
 
+    bridge_api_base: str = ""
+    bridge_token: str = ""
+
     tick_interval_seconds: int = 3
     heartbeat_seconds: int = 60
 
