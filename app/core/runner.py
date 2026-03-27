@@ -303,19 +303,20 @@ class TradingRunner:
 
     def _build_no_trade_reason(self, market: dict, positions_count: int, now_ts: float) -> str:
         if self.paused:
-            return "paused"
+            return "التداول موقوف حالياً"
         if self.mode != "live":
-            return "mode is not live"
+            return "الوضع ليس حي (Live)"
         if positions_count > 0:
-            return f"existing open positions ({positions_count})"
+            return f"يوجد صفقات مفتوحة حالياً ({positions_count})"
         if (now_ts - self.last_auto_ts) < settings.auto_cooldown_seconds:
-            return f"cooldown active ({int(settings.auto_cooldown_seconds - (now_ts - self.last_auto_ts))}s left)"
+            left = int(settings.auto_cooldown_seconds - (now_ts - self.last_auto_ts))
+            return f"فترة التهدئة فعّالة (متبقي {left} ثانية)"
         if market.get('session') == 'off_hours':
-            return "outside trading session"
+            return "خارج جلسة التداول المحددة"
         ema9 = float(market.get('ema9', 0.0))
         ema21 = float(market.get('ema21', 0.0))
         rsi7 = float(market.get('rsi7', 50.0))
-        return f"signal not qualified (EMA9={ema9:.2f}, EMA21={ema21:.2f}, RSI7={rsi7:.2f})"
+        return f"الإشارة غير مكتملة الشروط (EMA9={ema9:.2f}, EMA21={ema21:.2f}, RSI7={rsi7:.2f})"
 
     def _build_market_context(self, symbol_override: str | None = None) -> dict:
         now_utc = datetime.now(timezone.utc)
@@ -455,7 +456,7 @@ class TradingRunner:
                                 why = self._build_no_trade_reason(chosen_market, len(positions), now)
                                 self.last_no_trade_notify_ts = now
                                 self.audit.log("auto_skip", {"reason": why})
-                                await self.notifier.send(f"⏸ auto_skip: {why}")
+                                await self.notifier.send(f"⏸ تخطي دخول تلقائي: {why}")
 
                 if settings.heartbeat_seconds > 0 and (now - last_hb) >= settings.heartbeat_seconds:
                     last_hb = now
