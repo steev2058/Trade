@@ -33,6 +33,7 @@ class TradingRunner:
         self.last_auto_ts = 0.0
         self.price_history = defaultdict(lambda: deque(maxlen=200))
         self.day_start_balance = None
+        self.day_key = datetime.now(timezone.utc).date().isoformat()
         self.last_dd_alert_ts = 0.0
         self.last_tp_alert_ts = 0.0
         self.controller = TelegramController(
@@ -207,6 +208,23 @@ class TradingRunner:
                 self.price_history[sym].append(px)
 
 
+
+    def _roll_day_if_needed(self, now_ts: float):
+        day_now = datetime.now(timezone.utc).date().isoformat()
+        if day_now != self.day_key:
+            self.day_key = day_now
+            bal = self.broker.get_balance()
+            self.day_start_balance = float(bal.get("balance", 0.0) or 0.0)
+            self.auto_enabled = bool(settings.auto_trading_enabled)
+            self.last_dd_alert_ts = 0.0
+            self.last_tp_alert_ts = 0.0
+            self.audit.log("day_roll_reset", {"day": self.day_key, "day_start_balance": self.day_start_balance})
+            try:
+                import asyncio
+                asyncio.create_task(self.notifier.send(f"🗓 Day reset: baseline={self.day_start_balance} | auto={self.auto_enabled}"))
+            except Exception:
+                pass
+
     def _check_daily_drawdown_stop(self, now_ts: float) -> bool:
         bal = self.broker.get_balance()
         cur = float(bal.get("balance", 0.0) or 0.0)
@@ -315,6 +333,7 @@ class TradingRunner:
             now = datetime.now(timezone.utc).timestamp()
             try:
                 self._update_price_history()
+                self._roll_day_if_needed(now)
                 self._check_daily_drawdown_stop(now)
                 self._check_daily_profit_lock(now)
                 positions = self.broker.get_positions()
