@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     report_interval_seconds: int = 3600
     watch_symbols: str = "XAUUSD.m,BRENT.m"
     daily_drawdown_limit_pct: float = 6.0
+    daily_profit_target_pct: float = 3.0
 
     tick_interval_seconds: int = 3
     heartbeat_seconds: int = 60

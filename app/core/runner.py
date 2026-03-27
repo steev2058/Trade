@@ -34,6 +34,7 @@ class TradingRunner:
         self.price_history = defaultdict(lambda: deque(maxlen=200))
         self.day_start_balance = None
         self.last_dd_alert_ts = 0.0
+        self.last_tp_alert_ts = 0.0
         self.controller = TelegramController(
             settings.telegram_bot_token,
             settings.telegram_chat_id,
@@ -230,6 +231,31 @@ class TradingRunner:
             return True
         return False
 
+
+    def _check_daily_profit_lock(self, now_ts: float) -> bool:
+        bal = self.broker.get_balance()
+        cur = float(bal.get("balance", 0.0) or 0.0)
+        if cur <= 0:
+            return False
+        if self.day_start_balance is None:
+            self.day_start_balance = cur
+            return False
+
+        gain_pct = ((cur - self.day_start_balance) / self.day_start_balance) * 100.0
+        if gain_pct >= float(settings.daily_profit_target_pct):
+            if self.auto_enabled:
+                self.auto_enabled = False
+                self.audit.log("auto_off_profit_target", {"gain_pct": gain_pct, "target_pct": settings.daily_profit_target_pct})
+            if now_ts - self.last_tp_alert_ts > 60:
+                self.last_tp_alert_ts = now_ts
+                try:
+                    import asyncio
+                    asyncio.create_task(self.notifier.send(f"✅ Auto OFF: daily profit target {gain_pct:.2f}% >= {settings.daily_profit_target_pct}%"))
+                except Exception:
+                    pass
+            return True
+        return False
+
     def _build_market_context(self) -> dict:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
@@ -290,6 +316,7 @@ class TradingRunner:
             try:
                 self._update_price_history()
                 self._check_daily_drawdown_stop(now)
+                self._check_daily_profit_lock(now)
                 positions = self.broker.get_positions()
                 stats = {
                     "daily_loss_pct": 0,
