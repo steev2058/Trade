@@ -303,7 +303,7 @@ class TradingRunner:
         rsi7 = float(market.get('rsi7', 50.0))
         return f"signal not qualified (EMA9={ema9:.2f}, EMA21={ema21:.2f}, RSI7={rsi7:.2f})"
 
-    def _build_market_context(self) -> dict:
+    def _build_market_context(self, symbol_override: str | None = None) -> dict:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
 
@@ -316,7 +316,7 @@ class TradingRunner:
         else:
             session = "off_hours"
 
-        symbol = settings.auto_default_symbol or settings.default_symbol
+        symbol = symbol_override or settings.auto_default_symbol or settings.default_symbol
         series = list(self.price_history.get(symbol, []))
         ema9 = self._ema(series, 9) if series else 0.0
         ema21 = self._ema(series, 21) if series else 0.0
@@ -404,14 +404,24 @@ class TradingRunner:
                         # simple auto execution gate (phase 4 baseline)
                         if self.auto_enabled:
                             signals = []
+                            chosen_market = market
                             if self.mode == "live" and len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
-                                signals = await self.sr_fvg_strategy.generate(market)
-                                if not signals:
-                                    signals = await self.signal_strategy.generate(market)
+                                watch_symbols = [s.strip() for s in str(settings.watch_symbols or '').split(',') if s.strip()]
+                                if not watch_symbols:
+                                    watch_symbols = [settings.auto_default_symbol]
+
+                                for sym in watch_symbols:
+                                    chosen_market = self._build_market_context(sym)
+                                    signals = await self.sr_fvg_strategy.generate(chosen_market)
+                                    if not signals:
+                                        signals = await self.signal_strategy.generate(chosen_market)
+                                    if signals:
+                                        break
+
                                 if signals:
                                     sig = signals[0]
                                     side = sig.get('side', 'buy')
-                                    symbol = sig.get('symbol', settings.auto_default_symbol)
+                                    symbol = sig.get('symbol', chosen_market.get('symbol', settings.auto_default_symbol))
                                     res = self.broker.open_order(symbol, side, settings.auto_default_lot)
                                     self.audit.log("auto_open", {"symbol": symbol, "side": side, "lot": settings.auto_default_lot, "signal": sig, "result": res})
                                     self.journal.append("auto_open", res, symbol=symbol, side=side, lot=settings.auto_default_lot, ticket=res.get("order") or "")
@@ -422,15 +432,15 @@ class TradingRunner:
                                         reason_parts.append(f"SR({meta.get('support'):.2f}/{meta.get('resistance'):.2f})")
                                     if isinstance(meta.get('fvg'), dict):
                                         reason_parts.append(f"FVG-{meta['fvg'].get('type')}")
-                                    if 'ema9' in meta and 'ema21' in meta:
-                                        reason_parts.append(f"EMA9>{meta.get('ema9'):.2f} / EMA21>{meta.get('ema21'):.2f}")
-                                    if 'rsi7' in meta:
-                                        reason_parts.append(f"RSI7={meta.get('rsi7'):.2f}")
+                                    if 'ema9' in chosen_market and 'ema21' in chosen_market:
+                                        reason_parts.append(f"EMA9={chosen_market.get('ema9'):.2f} / EMA21={chosen_market.get('ema21'):.2f}")
+                                    if 'rsi7' in chosen_market:
+                                        reason_parts.append(f"RSI7={chosen_market.get('rsi7'):.2f}")
                                     reason = ' | '.join(reason_parts) if reason_parts else 'signal-trigger'
                                     await self.notifier.send(f"🤖 auto_open ({side} {symbol}) lot={settings.auto_default_lot}\nreason: {reason}\nresult: {res}")
 
                             if not signals and (now - self.last_no_trade_notify_ts) >= max(settings.auto_cooldown_seconds, 60):
-                                why = self._build_no_trade_reason(market, len(positions), now)
+                                why = self._build_no_trade_reason(chosen_market, len(positions), now)
                                 self.last_no_trade_notify_ts = now
                                 self.audit.log("auto_skip", {"reason": why})
                                 await self.notifier.send(f"⏸ auto_skip: {why}")
