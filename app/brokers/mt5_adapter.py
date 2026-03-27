@@ -150,9 +150,17 @@ class MT5Adapter:
                     headers=self._bridge_headers(),
                     timeout=5,
                 )
-                if r.ok:
-                    return {"closed": 0, "mode": "bridge", "note": "close_all command sent to bridge"}
-                return {"closed": 0, "mode": "bridge", "note": f"bridge command failed: {r.status_code}"}
+                if not r.ok:
+                    return {"closed": 0, "mode": "bridge", "note": f"bridge command failed: {r.status_code}"}
+
+                # fetch latest bridge result for immediate operator feedback
+                st = self._bridge_state() or {}
+                res = st.get("last_result")
+                if isinstance(res, dict):
+                    out = {"mode": "bridge"}
+                    out.update(res)
+                    return out
+                return {"closed": 0, "mode": "bridge", "note": "close_all command sent to bridge"}
             except Exception as e:
                 return {"closed": 0, "mode": "bridge", "note": f"bridge error: {e}"}
 
