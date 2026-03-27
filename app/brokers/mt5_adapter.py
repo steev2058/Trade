@@ -142,27 +142,44 @@ class MT5Adapter:
             "mode": mode,
         }
 
+    def _bridge_send(self, endpoint: str, payload: dict | None = None) -> dict:
+        try:
+            r = requests.post(
+                f"{self.bridge_api_base}{endpoint}",
+                headers=self._bridge_headers(),
+                json=payload or {},
+                timeout=5,
+            )
+            if not r.ok:
+                return {"ok": False, "note": f"bridge command failed: {r.status_code}"}
+            st = self._bridge_state() or {}
+            res = st.get("last_result")
+            if isinstance(res, dict):
+                out = {"mode": "bridge"}
+                out.update(res)
+                return out
+            return {"ok": True, "mode": "bridge", "note": "command sent"}
+        except Exception as e:
+            return {"ok": False, "mode": "bridge", "note": f"bridge error: {e}"}
+
+    def open_order(self, symbol: str, side: str, lot: float) -> dict:
+        if self._bridge_enabled():
+            return self._bridge_send('/bridge/command/open', {"symbol": symbol, "side": side, "lot": lot})
+        return {"ok": False, "note": "bridge not enabled"}
+
+    def close_ticket(self, ticket: int) -> dict:
+        if self._bridge_enabled():
+            return self._bridge_send('/bridge/command/close', {"ticket": int(ticket)})
+        return {"ok": False, "note": "bridge not enabled"}
+
+    def set_sl_tp(self, ticket: int, sl: float, tp: float) -> dict:
+        if self._bridge_enabled():
+            return self._bridge_send('/bridge/command/sl_tp', {"ticket": int(ticket), "sl": float(sl), "tp": float(tp)})
+        return {"ok": False, "note": "bridge not enabled"}
+
     def close_all_positions(self) -> dict:
         if self._bridge_enabled():
-            try:
-                r = requests.post(
-                    f"{self.bridge_api_base}/bridge/command/close_all",
-                    headers=self._bridge_headers(),
-                    timeout=5,
-                )
-                if not r.ok:
-                    return {"closed": 0, "mode": "bridge", "note": f"bridge command failed: {r.status_code}"}
-
-                # fetch latest bridge result for immediate operator feedback
-                st = self._bridge_state() or {}
-                res = st.get("last_result")
-                if isinstance(res, dict):
-                    out = {"mode": "bridge"}
-                    out.update(res)
-                    return out
-                return {"closed": 0, "mode": "bridge", "note": "close_all command sent to bridge"}
-            except Exception as e:
-                return {"closed": 0, "mode": "bridge", "note": f"bridge error: {e}"}
+            return self._bridge_send('/bridge/command/close_all')
 
         if self.is_paper:
             return {"closed": 0, "mode": "paper", "note": "no-op in paper mode"}

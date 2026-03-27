@@ -14,6 +14,8 @@ class TelegramController:
                 ["/positions", "/pnl"],
                 ["/pause", "/resume"],
                 ["/paper", "/live CONFIRM"],
+                ["/buy XAUUSD 0.01", "/sell XAUUSD 0.01"],
+                ["/close 123456", "/sl_tp 123456 2500 2600"],
             ],
             resize_keyboard=True,
             one_time_keyboard=False,
@@ -45,6 +47,10 @@ class TelegramController:
             "/balance - account balance snapshot\n"
             "/pnl - current open pnl snapshot\n"
             "/close_all CONFIRM - close all positions (guarded)\n"
+            "/buy SYMBOL LOT - open buy via bridge\n"
+            "/sell SYMBOL LOT - open sell via bridge\n"
+            "/close TICKET - close one position\n"
+            "/sl_tp TICKET SL TP - modify SL/TP\n"
         )
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,6 +111,42 @@ class TelegramController:
             return
         await update.message.reply_text(self.callbacks["close_all"]())
 
+    async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        if len(context.args) < 2:
+            return await update.message.reply_text("Use: /buy SYMBOL LOT")
+        symbol = context.args[0]
+        lot = float(context.args[1])
+        await update.message.reply_text(self.callbacks["open"](symbol, "buy", lot))
+
+    async def cmd_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        if len(context.args) < 2:
+            return await update.message.reply_text("Use: /sell SYMBOL LOT")
+        symbol = context.args[0]
+        lot = float(context.args[1])
+        await update.message.reply_text(self.callbacks["open"](symbol, "sell", lot))
+
+    async def cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        if len(context.args) < 1:
+            return await update.message.reply_text("Use: /close TICKET")
+        ticket = int(context.args[0])
+        await update.message.reply_text(self.callbacks["close"](ticket))
+
+    async def cmd_sl_tp(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        if len(context.args) < 3:
+            return await update.message.reply_text("Use: /sl_tp TICKET SL TP")
+        ticket = int(context.args[0])
+        sl = float(context.args[1])
+        tp = float(context.args[2])
+        await update.message.reply_text(self.callbacks["sl_tp"](ticket, sl, tp))
+
     async def start(self):
         if not self.enabled:
             return
@@ -119,6 +161,10 @@ class TelegramController:
         self.app.add_handler(CommandHandler("balance", self.cmd_balance))
         self.app.add_handler(CommandHandler("pnl", self.cmd_pnl))
         self.app.add_handler(CommandHandler("close_all", self.cmd_close_all))
+        self.app.add_handler(CommandHandler("buy", self.cmd_buy))
+        self.app.add_handler(CommandHandler("sell", self.cmd_sell))
+        self.app.add_handler(CommandHandler("close", self.cmd_close))
+        self.app.add_handler(CommandHandler("sl_tp", self.cmd_sl_tp))
         await self.app.initialize()
         await self.app.start()
         await self.app.updater.start_polling(drop_pending_updates=True)

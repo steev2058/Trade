@@ -54,3 +54,37 @@ def bridge_command_close_all(authorization: Optional[str] = Header(None)):
     auth(authorization)
     state["pending_command"] = {"command": "close_all"}
     return {"ok": True}
+
+
+@app.post("/bridge/command/open")
+def bridge_command_open(payload: dict, authorization: Optional[str] = Header(None)):
+    auth(authorization)
+    state["pending_command"] = {
+        "command": "open",
+        "symbol": payload.get("symbol"),
+        "side": payload.get("side"),
+        "lot": payload.get("lot"),
+    }
+    return {"ok": True}
+
+
+@app.post("/bridge/command/close")
+def bridge_command_close(payload: dict, authorization: Optional[str] = Header(None)):
+    auth(authorization)
+    state["pending_command"] = {
+        "command": "close",
+        "ticket": payload.get("ticket"),
+    }
+    return {"ok": True}
+
+
+@app.post("/bridge/command/sl_tp")
+def bridge_command_sl_tp(payload: dict, authorization: Optional[str] = Header(None)):
+    auth(authorization)
+    state["pending_command"] = {
+        "command": "sl_tp",
+        "ticket": payload.get("ticket"),
+        "sl": payload.get("sl"),
+        "tp": payload.get("tp"),
+    }
+    return {"ok": True}

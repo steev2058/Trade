@@ -127,6 +127,92 @@ def close_all():
     }
 
 
+def open_order(symbol: str, side: str, lot: float):
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return {"ok": False, "error": "no_tick", "symbol": symbol}
+    side = str(side or '').lower()
+    if side not in ('buy', 'sell'):
+        return {"ok": False, "error": "invalid_side"}
+    order_type = mt5.ORDER_TYPE_BUY if side == 'buy' else mt5.ORDER_TYPE_SELL
+    price = tick.ask if side == 'buy' else tick.bid
+    req = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": float(lot),
+        "type": order_type,
+        "price": float(price),
+        "deviation": 20,
+        "magic": 987654,
+        "comment": "bridge_open",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+    res = mt5.order_send(req)
+    return {
+        "ok": bool(res is not None and int(getattr(res, 'retcode', -1)) == int(mt5.TRADE_RETCODE_DONE)),
+        "retcode": int(getattr(res, 'retcode', -1)) if res is not None else -1,
+        "comment": str(getattr(res, 'comment', 'order_send_failed')) if res is not None else 'order_send_failed',
+    }
+
+
+def close_ticket(ticket: int):
+    positions = mt5.positions_get(ticket=int(ticket)) or []
+    if not positions:
+        return {"ok": False, "error": "ticket_not_found", "ticket": int(ticket)}
+    p = positions[0]
+    symbol = p.symbol
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return {"ok": False, "error": "no_tick", "ticket": int(ticket)}
+    is_buy = int(p.type) == 0
+    order_type = mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY
+    price = tick.bid if is_buy else tick.ask
+    req = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": float(p.volume),
+        "type": order_type,
+        "position": int(p.ticket),
+        "price": float(price),
+        "deviation": 20,
+        "magic": 987654,
+        "comment": "bridge_close_ticket",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+    res = mt5.order_send(req)
+    return {
+        "ok": bool(res is not None and int(getattr(res, 'retcode', -1)) == int(mt5.TRADE_RETCODE_DONE)),
+        "retcode": int(getattr(res, 'retcode', -1)) if res is not None else -1,
+        "comment": str(getattr(res, 'comment', 'order_send_failed')) if res is not None else 'order_send_failed',
+        "ticket": int(ticket),
+    }
+
+
+def modify_sl_tp(ticket: int, sl: float, tp: float):
+    positions = mt5.positions_get(ticket=int(ticket)) or []
+    if not positions:
+        return {"ok": False, "error": "ticket_not_found", "ticket": int(ticket)}
+    p = positions[0]
+    req = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "symbol": p.symbol,
+        "position": int(ticket),
+        "sl": float(sl),
+        "tp": float(tp),
+        "magic": 987654,
+        "comment": "bridge_sl_tp",
+    }
+    res = mt5.order_send(req)
+    return {
+        "ok": bool(res is not None and int(getattr(res, 'retcode', -1)) == int(mt5.TRADE_RETCODE_DONE)),
+        "retcode": int(getattr(res, 'retcode', -1)) if res is not None else -1,
+        "comment": str(getattr(res, 'comment', 'order_send_failed')) if res is not None else 'order_send_failed',
+        "ticket": int(ticket),
+    }
+
+
 def main():
     if not API_BASE or not BRIDGE_TOKEN:
         raise SystemExit("Set BRIDGE_API_BASE and BRIDGE_TOKEN")
@@ -139,8 +225,17 @@ def main():
             cmd = requests.get(f"{API_BASE}/bridge/command", headers=headers(), timeout=8)
             if cmd.ok:
                 data = cmd.json()
-                if data.get("command") == "close_all":
+                c = data.get("command")
+                result = None
+                if c == "close_all":
                     result = close_all()
+                elif c == "open":
+                    result = open_order(str(data.get('symbol','')), str(data.get('side','')), float(data.get('lot', 0.01)))
+                elif c == "close":
+                    result = close_ticket(int(data.get('ticket', 0)))
+                elif c == "sl_tp":
+                    result = modify_sl_tp(int(data.get('ticket', 0)), float(data.get('sl', 0)), float(data.get('tp', 0)))
+                if result is not None:
                     requests.post(f"{API_BASE}/bridge/result", headers=headers(), data=json.dumps(result), timeout=8)
         except Exception as e:
             try:

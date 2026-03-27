@@ -37,6 +37,9 @@ class TradingRunner:
                 "balance": self._balance_text,
                 "pnl": self._pnl_text,
                 "close_all": self._close_all,
+                "open": self._open_order,
+                "close": self._close_ticket,
+                "sl_tp": self._set_sl_tp,
             },
         )
         self.risk = RiskEngine(
@@ -96,6 +99,21 @@ class TradingRunner:
         res = self.broker.close_all_positions()
         self.audit.log("control_close_all", res)
         return f"close_all result: {res}"
+
+    def _open_order(self, symbol: str, side: str, lot: float) -> str:
+        res = self.broker.open_order(symbol, side, lot)
+        self.audit.log("control_open", {"symbol": symbol, "side": side, "lot": lot, "result": res})
+        return f"open result: {res}"
+
+    def _close_ticket(self, ticket: int) -> str:
+        res = self.broker.close_ticket(ticket)
+        self.audit.log("control_close", {"ticket": ticket, "result": res})
+        return f"close result: {res}"
+
+    def _set_sl_tp(self, ticket: int, sl: float, tp: float) -> str:
+        res = self.broker.set_sl_tp(ticket, sl, tp)
+        self.audit.log("control_sl_tp", {"ticket": ticket, "sl": sl, "tp": tp, "result": res})
+        return f"sl_tp result: {res}"
 
     def _pause(self):
         self.paused = True
