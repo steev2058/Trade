@@ -18,6 +18,7 @@ Professional, safety-first trading bot scaffold with MT5 integration, Telegram c
   - `adaptive_weighting.py`
   - `london_ny_session.py`
   - `regime_switcher.py`
+  - `sr_fvg.py` (Support/Resistance M5+M15 + FVG)
 - `app/notifiers/telegram_controller.py` - Telegram command handlers (authorized chat only)
 - `app/notifiers/telegram_notifier.py` - outbound Telegram notifications
 - `app/storage/audit.py` - append-only JSONL audit logs

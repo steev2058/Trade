@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     enable_news: bool = True
     enable_adaptive_weighting: bool = True
     enable_london_ny_session: bool = True
+    enable_sr_fvg: bool = True
 
     bridge_api_base: str = ""
     bridge_token: str = ""

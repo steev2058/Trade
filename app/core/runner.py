@@ -18,6 +18,7 @@ from app.strategies.adaptive_weighting import AdaptiveWeightingStrategy
 from app.strategies.london_ny_session import LondonNySessionStrategy
 from app.strategies.regime_switcher import RegimeSwitcher
 from app.strategies.simple_signal import SimpleSignalStrategy
+from app.strategies.sr_fvg import SrFvgStrategy
 
 
 class TradingRunner:
@@ -73,6 +74,7 @@ class TradingRunner:
         )
         self.regime = RegimeSwitcher()
         self.signal_strategy = SimpleSignalStrategy()
+        self.sr_fvg_strategy = SrFvgStrategy()
         self.strategies = []
         if settings.enable_smc_ict:
             self.strategies.append(SmcIctStrategy())
@@ -274,6 +276,16 @@ class TradingRunner:
             return True
         return False
 
+
+    def _build_candles_from_prices(self, prices, chunk=5):
+        if len(prices) < chunk:
+            return []
+        candles=[]
+        for i in range(0, len(prices)-chunk+1, chunk):
+            c=prices[i:i+chunk]
+            candles.append({"open": c[0], "high": max(c), "low": min(c), "close": c[-1]})
+        return candles
+
     def _build_market_context(self) -> dict:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
@@ -302,6 +314,9 @@ class TradingRunner:
             bias = "bearish"
             micro = "down"
 
+        candles_m5 = self._build_candles_from_prices(series, chunk=5)
+        candles_m15 = self._build_candles_from_prices(series, chunk=15)
+
         return {
             "symbol": symbol,
             "session": session,
@@ -314,6 +329,9 @@ class TradingRunner:
             "ema9": ema9,
             "ema21": ema21,
             "rsi7": rsi7,
+            "last_price": series[-1] if series else 0.0,
+            "candles_m5": candles_m5,
+            "candles_m15": candles_m15,
         }
 
     async def start(self):
@@ -369,7 +387,9 @@ class TradingRunner:
                         # simple auto execution gate (phase 4 baseline)
                         if self.auto_enabled and self.mode == "live":
                             if len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
-                                signals = await self.signal_strategy.generate(market)
+                                signals = await self.sr_fvg_strategy.generate(market)
+                                if not signals:
+                                    signals = await self.signal_strategy.generate(market)
                                 if signals:
                                     sig = signals[0]
                                     side = sig.get('side', 'buy')
