@@ -63,9 +63,54 @@ def get_snapshot():
 
 
 def close_all():
-    # conservative placeholder: only reports tickets. execution logic can be expanded safely.
     positions = mt5.positions_get() or []
-    return {"closed": 0, "tickets": [int(p.ticket) for p in positions], "note": "close_all execution stub"}
+    closed = 0
+    failed = []
+
+    for p in positions:
+      try:
+        symbol = p.symbol
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            failed.append({"ticket": int(p.ticket), "error": "no_tick"})
+            continue
+
+        # POSITION_TYPE_BUY=0, POSITION_TYPE_SELL=1
+        is_buy = int(p.type) == 0
+        order_type = mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY
+        price = tick.bid if is_buy else tick.ask
+
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(p.volume),
+            "type": order_type,
+            "position": int(p.ticket),
+            "price": float(price),
+            "deviation": 20,
+            "magic": 987654,
+            "comment": "bridge_close_all",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        res = mt5.order_send(req)
+        if res is not None and int(getattr(res, 'retcode', -1)) == int(mt5.TRADE_RETCODE_DONE):
+            closed += 1
+        else:
+            failed.append({
+                "ticket": int(p.ticket),
+                "retcode": int(getattr(res, 'retcode', -1)) if res is not None else -1,
+                "comment": str(getattr(res, 'comment', 'order_send_failed')) if res is not None else 'order_send_failed'
+            })
+      except Exception as e:
+        failed.append({"ticket": int(getattr(p, 'ticket', 0)), "error": str(e)})
+
+    return {
+        "closed": closed,
+        "requested": len(positions),
+        "failed": failed,
+        "mode": "bridge"
+    }
 
 
 def main():
