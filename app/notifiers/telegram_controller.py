@@ -1,4 +1,4 @@
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 
@@ -8,6 +8,16 @@ class TelegramController:
         self.allowed_chat_id = str(allowed_chat_id or "")
         self.callbacks = callbacks
         self.app = Application.builder().token(token).build() if self.enabled else None
+        self.keyboard = ReplyKeyboardMarkup(
+            [
+                ["/status", "/balance"],
+                ["/positions", "/pnl"],
+                ["/pause", "/resume"],
+                ["/paper", "/live CONFIRM"],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=False,
+        )
 
     def _is_allowed(self, update: Update) -> bool:
         cid = str(update.effective_chat.id) if update.effective_chat else ""
@@ -19,7 +29,7 @@ class TelegramController:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return await self._reject(update)
-        await update.message.reply_text("Linkat MJ Trader controller online. Use /help")
+        await update.message.reply_text("Linkat MJ Trader controller online. Use /help", reply_markup=self.keyboard)
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
