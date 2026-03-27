@@ -27,13 +27,17 @@ def headers():
 
 
 def connect_mt5():
-    # Some Windows setups fail when path is empty/invalid. Try without path first.
-    if MT5_PATH:
+    if MT5_LOGIN <= 0 or not MT5_PASSWORD or not MT5_SERVER:
+        raise RuntimeError('Missing MT5_LOGIN / MT5_PASSWORD / MT5_SERVER in .env')
+
+    # Some Windows setups fail when path is empty/invalid. Use path only if file exists.
+    if MT5_PATH and os.path.exists(MT5_PATH):
         ok = mt5.initialize(path=MT5_PATH, login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
     else:
         ok = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+
     if not ok:
-        raise RuntimeError(f"MT5 init failed: {mt5.last_error()}")
+        raise RuntimeError(f"MT5 init failed: {mt5.last_error()} | login={MT5_LOGIN} server={MT5_SERVER} path={MT5_PATH or 'AUTO'}")
 
 
 def get_snapshot():
