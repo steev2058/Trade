@@ -32,6 +32,7 @@ class TradingRunner:
         self.paused = False
         self.auto_enabled = bool(settings.auto_trading_enabled)
         self.last_auto_ts = 0.0
+        self.last_no_trade_notify_ts = 0.0
         self.price_history = defaultdict(lambda: deque(maxlen=200))
         self.day_start_balance = None
         self.day_key = datetime.now(timezone.utc).date().isoformat()
@@ -286,6 +287,22 @@ class TradingRunner:
             candles.append({"open": c[0], "high": max(c), "low": min(c), "close": c[-1]})
         return candles
 
+    def _build_no_trade_reason(self, market: dict, positions_count: int, now_ts: float) -> str:
+        if self.paused:
+            return "paused"
+        if self.mode != "live":
+            return "mode is not live"
+        if positions_count > 0:
+            return f"existing open positions ({positions_count})"
+        if (now_ts - self.last_auto_ts) < settings.auto_cooldown_seconds:
+            return f"cooldown active ({int(settings.auto_cooldown_seconds - (now_ts - self.last_auto_ts))}s left)"
+        if market.get('session') == 'off_hours':
+            return "outside trading session"
+        ema9 = float(market.get('ema9', 0.0))
+        ema21 = float(market.get('ema21', 0.0))
+        rsi7 = float(market.get('rsi7', 50.0))
+        return f"signal not qualified (EMA9={ema9:.2f}, EMA21={ema21:.2f}, RSI7={rsi7:.2f})"
+
     def _build_market_context(self) -> dict:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
@@ -385,8 +402,9 @@ class TradingRunner:
                                 )
 
                         # simple auto execution gate (phase 4 baseline)
-                        if self.auto_enabled and self.mode == "live":
-                            if len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
+                        if self.auto_enabled:
+                            signals = []
+                            if self.mode == "live" and len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
                                 signals = await self.sr_fvg_strategy.generate(market)
                                 if not signals:
                                     signals = await self.signal_strategy.generate(market)
@@ -410,6 +428,12 @@ class TradingRunner:
                                         reason_parts.append(f"RSI7={meta.get('rsi7'):.2f}")
                                     reason = ' | '.join(reason_parts) if reason_parts else 'signal-trigger'
                                     await self.notifier.send(f"🤖 auto_open ({side} {symbol}) lot={settings.auto_default_lot}\nreason: {reason}\nresult: {res}")
+
+                            if not signals and (now - self.last_no_trade_notify_ts) >= max(settings.auto_cooldown_seconds, 60):
+                                why = self._build_no_trade_reason(market, len(positions), now)
+                                self.last_no_trade_notify_ts = now
+                                self.audit.log("auto_skip", {"reason": why})
+                                await self.notifier.send(f"⏸ auto_skip: {why}")
 
                 if now - last_hb >= settings.heartbeat_seconds:
                     last_hb = now
