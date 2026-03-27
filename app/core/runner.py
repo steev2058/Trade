@@ -32,6 +32,8 @@ class TradingRunner:
         self.auto_enabled = bool(settings.auto_trading_enabled)
         self.last_auto_ts = 0.0
         self.price_history = defaultdict(lambda: deque(maxlen=200))
+        self.day_start_balance = None
+        self.last_dd_alert_ts = 0.0
         self.controller = TelegramController(
             settings.telegram_bot_token,
             settings.telegram_chat_id,
@@ -203,6 +205,31 @@ class TradingRunner:
             if px > 0:
                 self.price_history[sym].append(px)
 
+
+    def _check_daily_drawdown_stop(self, now_ts: float) -> bool:
+        bal = self.broker.get_balance()
+        cur = float(bal.get("balance", 0.0) or 0.0)
+        if cur <= 0:
+            return False
+        if self.day_start_balance is None:
+            self.day_start_balance = cur
+            return False
+
+        dd_pct = ((self.day_start_balance - cur) / self.day_start_balance) * 100.0
+        if dd_pct >= float(settings.daily_drawdown_limit_pct):
+            if self.auto_enabled:
+                self.auto_enabled = False
+                self.audit.log("auto_off_drawdown", {"drawdown_pct": dd_pct, "limit_pct": settings.daily_drawdown_limit_pct})
+            if now_ts - self.last_dd_alert_ts > 60:
+                self.last_dd_alert_ts = now_ts
+                try:
+                    import asyncio
+                    asyncio.create_task(self.notifier.send(f"🛑 Auto OFF: daily drawdown {dd_pct:.2f}% >= {settings.daily_drawdown_limit_pct}%"))
+                except Exception:
+                    pass
+            return True
+        return False
+
     def _build_market_context(self) -> dict:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
@@ -262,6 +289,7 @@ class TradingRunner:
             now = datetime.now(timezone.utc).timestamp()
             try:
                 self._update_price_history()
+                self._check_daily_drawdown_stop(now)
                 positions = self.broker.get_positions()
                 stats = {
                     "daily_loss_pct": 0,
