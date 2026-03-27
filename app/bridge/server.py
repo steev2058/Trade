@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
-from typing import Optional, Any
+from typing import Optional
 import os
 
 app = FastAPI()
@@ -13,10 +12,6 @@ def auth(authorization: Optional[str]):
         raise HTTPException(500, "bridge token missing")
     if authorization != f"Bearer {TOKEN}":
         raise HTTPException(401, "unauthorized")
-
-
-class AnyPayload(BaseModel):
-    __root__: Any
 
 
 @app.post("/bridge/snapshot")
