@@ -16,6 +16,7 @@ from app.strategies.smc_ict import SmcIctStrategy
 from app.strategies.adaptive_weighting import AdaptiveWeightingStrategy
 from app.strategies.london_ny_session import LondonNySessionStrategy
 from app.strategies.regime_switcher import RegimeSwitcher
+from app.strategies.simple_signal import SimpleSignalStrategy
 
 
 class TradingRunner:
@@ -65,6 +66,7 @@ class TradingRunner:
             bridge_token=settings.bridge_token,
         )
         self.regime = RegimeSwitcher()
+        self.signal_strategy = SimpleSignalStrategy()
         self.strategies = []
         if settings.enable_smc_ict:
             self.strategies.append(SmcIctStrategy())
@@ -241,11 +243,16 @@ class TradingRunner:
                         # simple auto execution gate (phase 4 baseline)
                         if self.auto_enabled and self.mode == "live":
                             if len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
-                                res = self.broker.open_order(settings.auto_default_symbol, "buy", settings.auto_default_lot)
-                                self.audit.log("auto_open", {"symbol": settings.auto_default_symbol, "lot": settings.auto_default_lot, "result": res})
-                                self.journal.append("auto_open", res, symbol=settings.auto_default_symbol, side="buy", lot=settings.auto_default_lot, ticket=res.get("order") or "")
-                                self.last_auto_ts = now
-                                await self.notifier.send(f"🤖 auto_open: {res}")
+                                signals = await self.signal_strategy.generate(market)
+                                if signals:
+                                    sig = signals[0]
+                                    side = sig.get('side', 'buy')
+                                    symbol = sig.get('symbol', settings.auto_default_symbol)
+                                    res = self.broker.open_order(symbol, side, settings.auto_default_lot)
+                                    self.audit.log("auto_open", {"symbol": symbol, "side": side, "lot": settings.auto_default_lot, "signal": sig, "result": res})
+                                    self.journal.append("auto_open", res, symbol=symbol, side=side, lot=settings.auto_default_lot, ticket=res.get("order") or "")
+                                    self.last_auto_ts = now
+                                    await self.notifier.send(f"🤖 auto_open ({side} {symbol}): {res}")
 
                 if now - last_hb >= settings.heartbeat_seconds:
                     last_hb = now
