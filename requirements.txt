@@ -6,3 +6,5 @@ python-telegram-bot==21.6
 MetaTrader5==5.0.45
 tenacity==9.0.0
 orjson==3.10.7
+fastapi==0.115.0
+uvicorn==0.30.6
