@@ -457,7 +457,7 @@ class TradingRunner:
                                 self.audit.log("auto_skip", {"reason": why})
                                 await self.notifier.send(f"⏸ auto_skip: {why}")
 
-                if now - last_hb >= settings.heartbeat_seconds:
+                if settings.heartbeat_seconds > 0 and (now - last_hb) >= settings.heartbeat_seconds:
                     last_hb = now
                     self.audit.log("heartbeat", {"mode": self.mode})
                     await self.notifier.send(f"💓 heartbeat | mode={self.mode}")
