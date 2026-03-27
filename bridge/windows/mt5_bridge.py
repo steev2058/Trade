@@ -27,7 +27,11 @@ def headers():
 
 
 def connect_mt5():
-    ok = mt5.initialize(path=MT5_PATH or None, login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+    # Some Windows setups fail when path is empty/invalid. Try without path first.
+    if MT5_PATH:
+        ok = mt5.initialize(path=MT5_PATH, login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+    else:
+        ok = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
     if not ok:
         raise RuntimeError(f"MT5 init failed: {mt5.last_error()}")
 
