@@ -19,6 +19,7 @@ from app.strategies.london_ny_session import LondonNySessionStrategy
 from app.strategies.regime_switcher import RegimeSwitcher
 from app.strategies.simple_signal import SimpleSignalStrategy
 from app.strategies.sr_fvg import SrFvgStrategy
+from app.strategies.ict_signal import IctSignalStrategy
 
 
 class TradingRunner:
@@ -79,6 +80,7 @@ class TradingRunner:
         self.regime = RegimeSwitcher()
         self.signal_strategy = SimpleSignalStrategy()
         self.sr_fvg_strategy = SrFvgStrategy()
+        self.ict_strategy = IctSignalStrategy()
         self.strategies = []
         if settings.enable_smc_ict:
             self.strategies.append(SmcIctStrategy())
@@ -425,7 +427,9 @@ class TradingRunner:
 
                                 for sym in watch_symbols:
                                     chosen_market = self._build_market_context(sym)
-                                    signals = await self.sr_fvg_strategy.generate(chosen_market)
+                                    signals = await self.ict_strategy.generate(chosen_market)
+                                    if not signals:
+                                        signals = await self.sr_fvg_strategy.generate(chosen_market)
                                     if not signals:
                                         signals = await self.signal_strategy.generate(chosen_market)
                                     if signals:
@@ -441,6 +445,12 @@ class TradingRunner:
                                     self.last_auto_ts = now
                                     meta = sig.get('meta', {}) if isinstance(sig, dict) else {}
                                     reason_parts = []
+                                    if meta.get('model'):
+                                        reason_parts.append(f"Model={meta.get('model')}")
+                                    if meta.get('liquidity'):
+                                        reason_parts.append(f"Liquidity={meta.get('liquidity')}")
+                                    if meta.get('mss'):
+                                        reason_parts.append(f"MSS={meta.get('mss')}")
                                     if 'support' in meta and 'resistance' in meta:
                                         reason_parts.append(f"SR({meta.get('support'):.2f}/{meta.get('resistance'):.2f})")
                                     if isinstance(meta.get('fvg'), dict):
