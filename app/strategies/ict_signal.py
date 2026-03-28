@@ -1,5 +1,21 @@
+from app.core.settings import settings
+
+
 class IctSignalStrategy:
     name = "ict_signal"
+
+    def _in_range(self, hhmm: str, start_end: str) -> bool:
+        try:
+            h, m = [int(x) for x in hhmm.split(':')]
+            cur = h * 60 + m
+            start, end = start_end.split('-')
+            sh, sm = [int(x) for x in start.split(':')]
+            eh, em = [int(x) for x in end.split(':')]
+            a = sh * 60 + sm
+            b = eh * 60 + em
+            return a <= cur <= b
+        except Exception:
+            return False
 
     def _fvg(self, candles):
         if len(candles) < 3:
@@ -18,6 +34,15 @@ class IctSignalStrategy:
         candles = market.get("candles_m5", []) or []
         if len(candles) < 25:
             return []
+
+        if bool(settings.ict_killzones_enabled):
+            hh = int(market.get("hour_utc", 0))
+            mm = int(market.get("minute_utc", 0))
+            hhmm = f"{hh:02d}:{mm:02d}"
+            in_london = self._in_range(hhmm, settings.ict_london_killzone_utc)
+            in_ny = self._in_range(hhmm, settings.ict_newyork_killzone_utc)
+            if not (in_london or in_ny):
+                return []
 
         last = candles[-1]
         prev = candles[-2]

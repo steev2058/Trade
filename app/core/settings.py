@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     daily_drawdown_limit_pct: float = 6.0
     daily_profit_target_pct: float = 3.0
 
+    ict_killzones_enabled: bool = True
+    ict_london_killzone_utc: str = "07:00-10:00"
+    ict_newyork_killzone_utc: str = "12:00-15:00"
+
     tick_interval_seconds: int = 3
     heartbeat_seconds: int = 60
 

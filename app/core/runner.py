@@ -354,6 +354,8 @@ class TradingRunner:
         return {
             "symbol": symbol,
             "session": session,
+            "hour_utc": now_utc.hour,
+            "minute_utc": now_utc.minute,
             "volatility": "medium",
             "news_high_impact": False,
             "bias": bias,
