@@ -175,7 +175,7 @@ class MT5Adapter:
                 return {"ok": False, "note": f"bridge command failed: {r.status_code}"}
 
             # wait briefly for matching result
-            for _ in range(10):
+            for _ in range(25):
                 st = self._bridge_state() or {}
                 res = st.get("last_result")
                 if isinstance(res, dict) and res.get("cmd_id") == cmd_id:
@@ -184,7 +184,7 @@ class MT5Adapter:
                     return out
                 time.sleep(0.3)
 
-            return {"ok": True, "mode": "bridge", "note": "command sent", "cmd_id": cmd_id}
+            return {"ok": False, "mode": "bridge", "note": "bridge command timeout waiting result", "cmd_id": cmd_id}
         except Exception as e:
             return {"ok": False, "mode": "bridge", "note": f"bridge error: {e}"}
 

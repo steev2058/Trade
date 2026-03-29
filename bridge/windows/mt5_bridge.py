@@ -172,7 +172,7 @@ def open_order(symbol: str, side: str, lot: float):
     order_type = mt5.ORDER_TYPE_BUY if side == 'buy' else mt5.ORDER_TYPE_SELL
     price = tick.ask if side == 'buy' else tick.bid
 
-    fill_candidates = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+    fill_candidates = [mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK]
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is not None and hasattr(symbol_info, 'filling_mode'):
         fm = int(symbol_info.filling_mode)
@@ -180,6 +180,7 @@ def open_order(symbol: str, side: str, lot: float):
             fill_candidates = [fm] + [x for x in fill_candidates if x != fm]
 
     last_ret = None
+    # 1) try explicit filling modes
     for fill_mode in fill_candidates:
         req = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -206,6 +207,32 @@ def open_order(symbol: str, side: str, lot: float):
                 "order": int(getattr(res, 'order', 0) or 0),
                 "deal": int(getattr(res, 'deal', 0) or 0),
             }
+
+    # 2) last fallback: let terminal default filling (omit type_filling)
+    req = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": float(lot),
+        "type": order_type,
+        "price": float(price),
+        "deviation": 20,
+        "magic": 987654,
+        "comment": "bridge_open_default_fill",
+        "type_time": mt5.ORDER_TIME_GTC,
+    }
+    res = mt5.order_send(req)
+    last_ret = res
+    if res is not None and int(getattr(res, 'retcode', -1)) == int(mt5.TRADE_RETCODE_DONE):
+        return {
+            "ok": True,
+            "retcode": int(getattr(res, 'retcode', -1)),
+            "comment": str(getattr(res, 'comment', 'done')),
+            "symbol": symbol,
+            "side": side,
+            "lot": float(lot),
+            "order": int(getattr(res, 'order', 0) or 0),
+            "deal": int(getattr(res, 'deal', 0) or 0),
+        }
 
     return {
         "ok": False,
