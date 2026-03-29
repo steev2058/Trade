@@ -197,7 +197,7 @@ class TradingRunner:
         vol = 0.02 if aggressive else 0.01
         risk_usd = vol * 500
         reward_usd = risk_usd * 3
-        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3"
+        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={settings.strict_point_value_validation}"
 
     def _set_risk_mode(self, mode: str) -> str:
         m = (mode or "").lower().strip()
@@ -600,6 +600,15 @@ class TradingRunner:
                                     side = sig.side
                                     symbol = sig.symbol or best_market.get('symbol', settings.auto_default_symbol)
                                     volume = float(sig.volume)
+
+                                    if settings.strict_point_value_validation:
+                                        pv = float(best_market.get("point_value", 0.0) or 0.0)
+                                        if pv <= 0:
+                                            why = f"invalid point_value for {symbol} (point_value={pv})"
+                                            self.audit.log("risk_block", {"reason": why, "symbol": symbol})
+                                            await self.notifier.send(f"🚫 trade rejected by risk engine: {why}")
+                                            continue
+
                                     res = self.broker.open_order(symbol, side, volume)
                                     if res.get("ok") and res.get("order"):
                                         sltp_res = self.broker.set_sl_tp_by_points(

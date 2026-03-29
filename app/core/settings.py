@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     auto_default_symbol: str = "XAUUSD.m"
     auto_default_lot: float = 0.01
     risk_mode: str = "normal"  # safe|normal|aggressive
+    strict_point_value_validation: bool = True
     auto_cooldown_seconds: int = 120
     report_interval_seconds: int = 3600
     watch_symbols: str = "XAUUSD.m,BRENT.m"
