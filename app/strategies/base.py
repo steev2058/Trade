@@ -42,7 +42,8 @@ class Strategy:
 
         symbol = str(market.get("symbol", ""))
         point_value = float(market.get("point_value", 0.0) or 0.0)
-        if point_value <= 0:
+        allow_fallback = bool(market.get("allow_point_fallback", True))
+        if point_value <= 0 and allow_fallback:
             point_value = cls._approx_point_value(symbol)
 
         denom = max(volume * point_value, 1e-9)

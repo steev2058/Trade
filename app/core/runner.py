@@ -197,7 +197,7 @@ class TradingRunner:
         vol = 0.02 if aggressive else 0.01
         risk_usd = vol * 500
         reward_usd = risk_usd * 3
-        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={settings.strict_point_value_validation}"
+        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={settings.strict_point_value_validation} | paper_policy={settings.paper_valuation_policy}"
 
     def _set_risk_mode(self, mode: str) -> str:
         m = (mode or "").lower().strip()
@@ -437,6 +437,13 @@ class TradingRunner:
             candles.append({"open": c[0], "high": max(c), "low": min(c), "close": c[-1]})
         return candles
 
+    def _validate_symbol_valuation(self, market: dict, symbol: str) -> tuple[bool, str]:
+        pv = float(market.get("point_value", 0.0) or 0.0)
+        ps = float(market.get("point_size", 0.0) or 0.0)
+        if pv > 0 and ps > 0:
+            return True, "ok"
+        return False, f"ambiguous valuation for {symbol} (point_value={pv}, point_size={ps})"
+
     def _build_no_trade_reason(self, market: dict, positions_count: int, now_ts: float) -> str:
         if self.paused:
             return "التداول موقوف حالياً"
@@ -515,6 +522,7 @@ class TradingRunner:
             "atr_pct": atr_pct,
             "is_noisy": atr_pct > 0.02,
             "aggressive_mode": self.risk_mode == "aggressive",
+            "allow_point_fallback": not (self.mode == "live" and settings.strict_point_value_validation),
             "strategy_performance": {
                 k: {
                     "wins": v.get("wins", 0),
@@ -602,12 +610,20 @@ class TradingRunner:
                                     volume = float(sig.volume)
 
                                     if settings.strict_point_value_validation:
-                                        pv = float(best_market.get("point_value", 0.0) or 0.0)
-                                        if pv <= 0:
-                                            why = f"invalid point_value for {symbol} (point_value={pv})"
-                                            self.audit.log("risk_block", {"reason": why, "symbol": symbol})
-                                            await self.notifier.send(f"🚫 trade rejected by risk engine: {why}")
-                                            continue
+                                        ok_val, why = self._validate_symbol_valuation(best_market, symbol)
+                                        if not ok_val:
+                                            if self.mode == "live":
+                                                self.audit.log("valuation_block", {"reason": why, "symbol": symbol, "mode": self.mode})
+                                                await self.notifier.send(f"🚫 trade rejected (valuation ambiguity): {why}")
+                                                continue
+                                            # paper mode policy: warn or block
+                                            if str(settings.paper_valuation_policy).lower().strip() == "block":
+                                                self.audit.log("valuation_block", {"reason": why, "symbol": symbol, "mode": self.mode})
+                                                await self.notifier.send(f"🚫 paper trade blocked (valuation ambiguity): {why}")
+                                                continue
+                                            else:
+                                                self.audit.log("valuation_warn", {"reason": why, "symbol": symbol, "mode": self.mode})
+                                                await self.notifier.send(f"⚠️ valuation warning (paper mode): {why}")
 
                                     res = self.broker.open_order(symbol, side, volume)
                                     if res.get("ok") and res.get("order"):

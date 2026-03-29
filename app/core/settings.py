@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     auto_default_lot: float = 0.01
     risk_mode: str = "normal"  # safe|normal|aggressive
     strict_point_value_validation: bool = True
+    paper_valuation_policy: str = "warn"  # warn|block
     auto_cooldown_seconds: int = 120
     report_interval_seconds: int = 3600
     watch_symbols: str = "XAUUSD.m,BRENT.m"
