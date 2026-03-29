@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     bridge_api_base: str = ""
     bridge_token: str = ""
 
+    dexter_enabled: bool = False
+    dexter_base_url: str = "http://dexter-service:8081"
+    dexter_timeout_seconds: int = 45
+
+    trading_agents_enabled: bool = False
+    trading_agents_base_url: str = "http://tradingagents-service:8082"
+    trading_agents_timeout_seconds: int = 60
+
+    consensus_min_confidence: float = 0.75
+
     auto_trading_enabled: bool = False
     auto_default_symbol: str = "XAUUSD.m"
     auto_default_lot: float = 0.01
