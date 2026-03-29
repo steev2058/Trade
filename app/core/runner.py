@@ -41,7 +41,7 @@ class TradingRunner:
         self.last_auto_ts = 0.0
         self.last_no_trade_notify_ts = 0.0
         self.watch_symbols = [s.strip() for s in str(settings.watch_symbols or '').split(',') if s.strip()]
-        self.risk_mode = (settings.risk_mode or "normal").lower().strip()
+        self.risk_mode = (settings.risk_mode or "balanced").lower().strip()
         self.strict_point_value_validation = bool(settings.strict_point_value_validation)
         self.price_history = defaultdict(lambda: deque(maxlen=200))
         self.strategy_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "n": 0})
@@ -213,7 +213,7 @@ class TradingRunner:
             vol = 0.01
         risk_usd = vol * 500
         reward_usd = risk_usd * 3
-        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={self.strict_point_value_validation} | paper_policy={settings.paper_valuation_policy}"
+        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={self.strict_point_value_validation} | require_protected={settings.require_protected_execution} | paper_policy={settings.paper_valuation_policy}"
 
     def _set_risk_mode(self, mode: str) -> str:
         m = (mode or "").lower().strip()
@@ -472,6 +472,18 @@ class TradingRunner:
             }
         )
 
+    def _execute_intent_with_protection(self, intent, market_context: dict):
+        result = execute_protected_trade(
+            broker=self.broker,
+            risk_engine=self.risk,
+            intent=intent,
+            market_context=market_context,
+            strict_point_value_validation=self.strict_point_value_validation,
+            require_protected_execution=bool(settings.require_protected_execution),
+            mode=self.mode,
+        )
+        return result.to_dict()
+
     def _build_no_trade_reason(self, market: dict, positions_count: int, now_ts: float) -> str:
         if self.paused:
             return "التداول موقوف حالياً"
@@ -642,22 +654,37 @@ class TradingRunner:
                                             continue
 
                                         _, st_name, sig = local_best
-                                        side = sig.side
                                         symbol = sig.symbol or sym
-                                        volume = float(sig.volume)
-                                        if self.strict_point_value_validation:
-                                            ok_val, why = self._validate_symbol_valuation(chosen_market, symbol)
-                                            if not ok_val:
-                                                await self.notifier.send(f"🚫 trade rejected (valuation ambiguity): {why}")
-                                                continue
+                                        local_decision = type("D", (), {"final_action": sig.side.upper(), "symbol": symbol})()
+                                        risk_result = self.risk.build_execution_intent(
+                                            account_state=bal,
+                                            symbol_state={
+                                                "symbol": symbol,
+                                                "point_value": chosen_market.get("point_value", 0.0),
+                                                "point_size": chosen_market.get("point_size", 0.0),
+                                            },
+                                            unified_decision=local_decision,
+                                            mode=self.mode,
+                                            risk_mode=self.risk_mode,
+                                            strict_point_value_validation=self.strict_point_value_validation,
+                                            risk_percent_override=float(settings.risk_percent_per_trade),
+                                        )
+                                        if not risk_result.ok or not risk_result.intent:
+                                            self.audit.log("risk_intent_block_local", {"symbol": symbol, "reason": risk_result.reason, "strategy": st_name})
+                                            await self.notifier.send(f"🚫 HOLD {symbol}: {risk_result.reason}")
+                                            continue
 
-                                        res = self.broker.open_order(symbol, side, volume) if self.mode == "live" else {"ok": True, "mode": "paper", "simulated": True, "symbol": symbol, "side": side, "lot": volume}
-                                        self.audit.log("auto_open_local", {"strategy": st_name, "signal": sig.__dict__, "result": res})
+                                        intent = risk_result.intent
+                                        res = self._execute_intent_with_protection(intent, chosen_market)
+                                        self.audit.log("auto_open_local", {"strategy": st_name, "signal": sig.__dict__, "intent": intent.model_dump(), "result": res})
                                         self.last_auto_ts = now
-                                        traded = bool(res.get("ok"))
+                                        traded = bool(res.get("success"))
                                         if traded:
-                                            await self.notifier.send(f"✅ {('PAPER TRADE' if self.mode=='paper' else 'EXECUTED')} {symbol} {side.upper()} | lot={volume} | mode={self.mode}")
+                                            await self.notifier.send(
+                                                f"✅ {('PAPER TRADE' if self.mode=='paper' else 'EXECUTED')} {symbol} {intent.action} | lot={intent.lot_size} | SL=${intent.stop_loss_usd:.2f} | TP=${intent.take_profit_usd:.2f} | protected={res.get('protection_attached')} | ticket={res.get('ticket_id')} | mode={self.mode}"
+                                            )
                                             break
+                                        await self.notifier.send(f"🚫 trade rejected by execution/risk path | {res.get('reason')}")
                                         continue
 
                                     ticks = self.broker.get_ticks() or {}
@@ -727,6 +754,7 @@ class TradingRunner:
                                         mode=self.mode,
                                         risk_mode=self.risk_mode,
                                         strict_point_value_validation=self.strict_point_value_validation,
+                                        risk_percent_override=float(settings.risk_percent_per_trade),
                                     )
 
                                     if not risk_result.ok or not risk_result.intent:
@@ -735,24 +763,15 @@ class TradingRunner:
                                         continue
 
                                     intent = risk_result.intent
-                                    exec_result = execute_protected_trade(
-                                        broker=self.broker,
-                                        risk_engine=self.risk,
-                                        intent=intent,
-                                        market_context=chosen_market,
-                                        strict_point_value_validation=self.strict_point_value_validation,
-                                        require_protected_execution=bool(settings.require_protected_execution),
-                                        mode=self.mode,
-                                    )
-                                    res = exec_result.to_dict()
+                                    res = self._execute_intent_with_protection(intent, chosen_market)
 
-                                    if res.get("ok") and res.get("order") and self.mode == "live":
-                                        self.open_trade_ctx[int(res.get("order"))] = {
+                                    if res.get("success") and res.get("ticket_id") and self.mode == "live":
+                                        self.open_trade_ctx[int(res.get("ticket_id"))] = {
                                             "strategy": "external_consensus",
                                             "risk_usd": float(intent.stop_loss_usd),
                                             "reward_usd": float(intent.take_profit_usd),
-                                            "sl_points": float(res.get("sl_points", 0.0)),
-                                            "tp_points": float(res.get("tp_points", 0.0)),
+                                            "sl_points": float(res.get("stop_loss_points", 0.0) or 0.0),
+                                            "tp_points": float(res.get("take_profit_points", 0.0) or 0.0),
                                             "volume": float(intent.lot_size),
                                             "symbol": sym,
                                             "breakeven_done": False,
@@ -763,7 +782,7 @@ class TradingRunner:
 
                                     self.audit.log("execution_intent", {"intent": intent.model_dump(), "result": res})
                                     self.last_auto_ts = now
-                                    traded = bool(res.get("ok"))
+                                    traded = bool(res.get("success"))
 
                                     if traded:
                                         await self.notifier.send(
@@ -771,7 +790,7 @@ class TradingRunner:
                                         )
                                         break
                                     else:
-                                        await self.notifier.send(f"🚫 trade rejected by execution/risk path | {res}")
+                                        await self.notifier.send(f"🚫 trade rejected by execution/risk path | reason={res.get('reason')} | mode={self.mode}")
 
                             if (not traded) and (now - self.last_no_trade_notify_ts) >= max(settings.auto_cooldown_seconds, 60):
                                 why = self._build_no_trade_reason(chosen_market, len(positions), now)

@@ -1,5 +1,6 @@
 from app.risk.engine import RiskEngine
 from app.decision.schemas import UnifiedDecision
+from unittest.mock import patch
 from app.execution.protected_executor import execute_protected_trade
 
 
@@ -181,3 +182,25 @@ def test_live_mode_refuses_unsafe_execution():
         mode="live",
     )
     assert res.success is False
+
+
+def test_live_mode_uses_protected_execution_helper():
+    from app.core import runner as runner_mod
+    r = runner_mod.TradingRunner.__new__(runner_mod.TradingRunner)
+    r.mode = "live"
+    r.broker = FakeBroker(open_ok=True, protect_ok=True)
+    r.risk = RiskEngine(0.02, 0.05, 20, 5)
+    r.strict_point_value_validation = True
+
+    class I:
+        symbol = "XAUUSD"
+        action = "BUY"
+        lot_size = 0.01
+        stop_loss_usd = 5.0
+        take_profit_usd = 15.0
+
+    with patch("app.core.runner.execute_protected_trade") as m:
+        m.return_value = type("R", (), {"to_dict": lambda self: {"success": True, "mode": "live"}})()
+        out = runner_mod.TradingRunner._execute_intent_with_protection(r, I(), {"point_value": 1.0, "point_size": 0.01})
+        assert out["success"] is True
+        assert m.called

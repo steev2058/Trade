@@ -9,6 +9,7 @@ Linkat MJ Trader هو **محرك تنفيذ تداول آمن** مع MT5 + Teleg
 - حوكمة مخاطر صارمة + سجل تدقيق (Audit) + إشعارات تشغيلية
 
 > ⚠️ مبدأ أساسي: أي غموض في التقييم/الميتاداتا أو تعارض قرار => **HOLD / NO TRADE**.
+> ✅ جميع صفقات الـ auto في وضع live تمر حصراً عبر `app/execution/protected_executor.py`.
 
 ---
 
@@ -141,7 +142,7 @@ Linkat MJ Trader هو **محرك تنفيذ تداول آمن** مع MT5 + Teleg
 - `MIN_LOT_SIZE`, `MAX_LOT_SIZE`
 - `USD_STOP_PER_0_01_LOT`
 - `RR_RATIO`
-- `REQUIRE_PROTECTED_EXECUTION=true|false`
+- `REQUIRE_PROTECTED_EXECUTION=true|false (default: true)`
 - `MAX_DAILY_LOSS`
 - `MAX_TRADES_PER_DAY`
 - `MAX_CONCURRENT_POSITIONS`

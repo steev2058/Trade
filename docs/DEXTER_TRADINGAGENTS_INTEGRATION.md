@@ -207,3 +207,8 @@ PAPER_VALUATION_POLICY=warn       # warn|block
 - If confidence below threshold -> HOLD.
 - If valuation ambiguous in live -> BLOCK.
 - Trade repo remains sole execution authority.
+
+
+### Live routing guarantee
+- Runner routes live orders through protected_executor only.
+- If protected flow fails and `REQUIRE_PROTECTED_EXECUTION=true` (default), trade is blocked.
