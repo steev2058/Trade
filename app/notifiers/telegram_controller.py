@@ -16,6 +16,7 @@ class TelegramController:
                 ["⚡ وضع حي", "🧪 وضع تجريبي"],
                 ["🛑 اغلاق الكل", "⏸ إيقاف", "▶️ متابعة"],
                 ["⚙️ المخاطرة", "🎯 الوضع المتوازن", "🔥 الوضع الهجومي"],
+                ["🛡️ إعداد آمن (Safe Preset)"],
                 ["🛡️ حماية مشددة ON", "🛡️ حماية مشددة OFF"],
                 ["🧠 الاستراتيجيات", "✅ تفعيل ICT", "🚫 تعطيل Scalper"],
                 ["🧭 الرموز", "🪙 رموز الكريبتو", "🥇 الذهب+النفط"],
@@ -119,6 +120,8 @@ class TelegramController:
             return await self.cmd_auto_off(update, context)
         if txt == '⚙️ المخاطرة':
             return await self.cmd_risk(update, context)
+        if txt == '🛡️ إعداد آمن (Safe Preset)':
+            return await self.cmd_safe_preset(update, context)
         if txt == '🎯 الوضع المتوازن':
             context.args = ['balanced']
             return await self.cmd_set_mode(update, context)
@@ -284,6 +287,11 @@ class TelegramController:
         val = context.args[0] if context.args else ""
         await update.message.reply_text(self.callbacks["strict_point_value"](val))
 
+    async def cmd_safe_preset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["safe_preset"]())
+
     async def cmd_strategies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return await self._reject(update)
@@ -333,6 +341,7 @@ class TelegramController:
         self.app.add_handler(CommandHandler("today", self.cmd_today))
         self.app.add_handler(CommandHandler("risk", self.cmd_risk))
         self.app.add_handler(CommandHandler("strict_point_value", self.cmd_strict_point_value))
+        self.app.add_handler(CommandHandler("safe_preset", self.cmd_safe_preset))
         self.app.add_handler(CommandHandler("set_mode", self.cmd_set_mode))
         self.app.add_handler(CommandHandler("strategies", self.cmd_strategies))
         self.app.add_handler(CommandHandler("enable", self.cmd_enable))

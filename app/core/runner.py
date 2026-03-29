@@ -43,6 +43,7 @@ class TradingRunner:
         self.watch_symbols = [s.strip() for s in str(settings.watch_symbols or '').split(',') if s.strip()]
         self.risk_mode = (settings.risk_mode or "balanced").lower().strip()
         self.strict_point_value_validation = bool(settings.strict_point_value_validation)
+        self.require_protected_execution = bool(settings.require_protected_execution)
         self.price_history = defaultdict(lambda: deque(maxlen=200))
         self.strategy_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "n": 0})
         self.open_trade_ctx = {}  # ticket -> context
@@ -77,6 +78,7 @@ class TradingRunner:
                 "enable_strategy": self._enable_strategy,
                 "disable_strategy": self._disable_strategy,
                 "strict_point_value": self._set_strict_point_value,
+                "safe_preset": self._safe_preset,
             },
         )
         self.risk = RiskEngine(
@@ -213,7 +215,7 @@ class TradingRunner:
             vol = 0.01
         risk_usd = vol * 500
         reward_usd = risk_usd * 3
-        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={self.strict_point_value_validation} | require_protected={settings.require_protected_execution} | paper_policy={settings.paper_valuation_policy}"
+        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={self.strict_point_value_validation} | require_protected={self.require_protected_execution} | paper_policy={settings.paper_valuation_policy}"
 
     def _set_risk_mode(self, mode: str) -> str:
         m = (mode or "").lower().strip()
@@ -265,6 +267,19 @@ class TradingRunner:
         self.strict_point_value_validation = (v == "on")
         self.audit.log("strict_point_value_toggle", {"enabled": self.strict_point_value_validation})
         return f"✅ strict_point_value={self.strict_point_value_validation}"
+
+    def _safe_preset(self) -> str:
+        self.risk_mode = "balanced"
+        self.strict_point_value_validation = True
+        self.require_protected_execution = True
+        self.watch_symbols = ["XAUUSD.m", "BRENT.m"]
+        self.audit.log("safe_preset", {
+            "risk_mode": self.risk_mode,
+            "strict_point_value_validation": self.strict_point_value_validation,
+            "require_protected_execution": self.require_protected_execution,
+            "watch_symbols": self.watch_symbols,
+        })
+        return "🛡️ Safe preset applied: balanced | strict ON | protected ON | symbols=XAUUSD.m,BRENT.m"
 
     def _pause(self):
         self.paused = True
@@ -479,7 +494,7 @@ class TradingRunner:
             intent=intent,
             market_context=market_context,
             strict_point_value_validation=self.strict_point_value_validation,
-            require_protected_execution=bool(settings.require_protected_execution),
+            require_protected_execution=bool(self.require_protected_execution),
             mode=self.mode,
         )
         return result.to_dict()
