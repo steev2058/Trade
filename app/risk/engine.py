@@ -22,7 +22,8 @@ class RiskEngine:
             return False, "max trades/day reached"
         if stats.get("open_positions", 0) >= self.max_concurrent_positions:
             return False, "max concurrent positions reached"
-        if float(stats.get("balance", 0.0) or 0.0) <= float(self.min_balance):
+        min_balance = float(self.min_balance or 0.0)
+        if min_balance > 0 and float(stats.get("balance", 0.0) or 0.0) <= min_balance:
             return False, "balance protection reached"
         if self.cooldown_after_losses > 0 and int(stats.get("consecutive_losses", 0) or 0) >= self.cooldown_after_losses:
             return False, "loss cooldown active"
