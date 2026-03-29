@@ -20,6 +20,12 @@ from app.strategies.regime_switcher import RegimeSwitcher
 from app.strategies.simple_signal import SimpleSignalStrategy
 from app.strategies.sr_fvg import SrFvgStrategy
 from app.strategies.ict_signal import IctSignalStrategy
+from app.agents.dexter_client import analyze_with_dexter
+from app.agents.tradingagents_client import analyze_with_tradingagents
+from app.decision.consensus import build_unified_decision
+from app.decision.schemas import ExecutionIntent
+from app.services.external_agent_health import check_dexter_health, check_tradingagents_health
+from app.services.market_context import build_market_context
 
 
 class TradingRunner:
@@ -454,6 +460,22 @@ class TradingRunner:
             return True, "ok"
         return False, f"ambiguous valuation for {symbol} (point_value={pv}, point_size={ps})"
 
+    def _build_execution_intent(self, symbol: str, action: str, market: dict) -> ExecutionIntent:
+        aggressive = bool(market.get("aggressive_mode", False))
+        lot = 0.02 if aggressive else 0.01
+        sl_usd = lot * 500.0
+        tp_usd = sl_usd * 3.0
+        return ExecutionIntent(
+            symbol=symbol,
+            action=action,
+            mode=self.mode,
+            risk_percent=float(settings.max_risk_per_trade),
+            stop_loss_usd=sl_usd,
+            take_profit_usd=tp_usd,
+            lot_size=lot,
+            rationale="external-consensus-aligned",
+        )
+
     def _build_no_trade_reason(self, market: dict, positions_count: int, now_ts: float) -> str:
         if self.paused:
             return "التداول موقوف حالياً"
@@ -594,99 +616,171 @@ class TradingRunner:
 
                         # auto execution with strategy competition by confidence * regime weight
                         if self.auto_enabled:
-                            best_sig = None
-                            best_market = market
-                            best_strategy = ""
-                            if self.mode == "live" and len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
+                            traded = False
+                            chosen_market = market
+                            if len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
                                 watch_symbols = self.watch_symbols or [settings.auto_default_symbol]
+
+                                dexter_ok = check_dexter_health()
+                                committee_ok = check_tradingagents_health()
+                                if settings.dexter_enabled and not dexter_ok:
+                                    self.audit.log("hold_external_unavailable", {"source": "dexter"})
+                                if settings.trading_agents_enabled and not committee_ok:
+                                    self.audit.log("hold_external_unavailable", {"source": "tradingagents"})
+
                                 for sym in watch_symbols:
-                                    mk = self._build_market_context(sym)
-                                    for st in active:
-                                        sigs = await st.generate(mk)
-                                        if not sigs:
+                                    chosen_market = self._build_market_context(sym)
+
+                                    # backward-compatible local strategy path when external agents disabled
+                                    if (not settings.dexter_enabled) and (not settings.trading_agents_enabled):
+                                        local_best = None
+                                        for st in active:
+                                            sigs = await st.generate(chosen_market)
+                                            if not sigs:
+                                                continue
+                                            sig = sigs[0]
+                                            score = float(getattr(sig, 'confidence', 0.0) or 0.0) * float(regime.weights.get(st.name, 1.0))
+                                            if (local_best is None) or (score > local_best[0]):
+                                                local_best = (score, st.name, sig)
+                                        if local_best is None:
                                             continue
-                                        sig = sigs[0]
-                                        score = float(getattr(sig, 'confidence', 0.0) or 0.0) * float(regime.weights.get(st.name, 1.0))
-                                        self.audit.log("signal_detected", {"strategy": st.name, "symbol": sym, "score": score, "signal": sig.__dict__})
-                                        if (best_sig is None) or (score > best_sig[0]):
-                                            best_sig = (score, sig)
-                                            best_market = mk
-                                            best_strategy = st.name
 
-                                if best_sig:
-                                    _, sig = best_sig
-                                    side = sig.side
-                                    symbol = sig.symbol or best_market.get('symbol', settings.auto_default_symbol)
-                                    volume = float(sig.volume)
-
-                                    if self.strict_point_value_validation:
-                                        ok_val, why = self._validate_symbol_valuation(best_market, symbol)
-                                        if not ok_val:
-                                            if self.mode == "live":
-                                                self.audit.log("valuation_block", {"reason": why, "symbol": symbol, "mode": self.mode})
+                                        _, st_name, sig = local_best
+                                        side = sig.side
+                                        symbol = sig.symbol or sym
+                                        volume = float(sig.volume)
+                                        if self.strict_point_value_validation:
+                                            ok_val, why = self._validate_symbol_valuation(chosen_market, symbol)
+                                            if not ok_val:
                                                 await self.notifier.send(f"🚫 trade rejected (valuation ambiguity): {why}")
                                                 continue
-                                            # paper mode policy: warn or block
-                                            if str(settings.paper_valuation_policy).lower().strip() == "block":
-                                                self.audit.log("valuation_block", {"reason": why, "symbol": symbol, "mode": self.mode})
-                                                await self.notifier.send(f"🚫 paper trade blocked (valuation ambiguity): {why}")
-                                                continue
-                                            else:
-                                                self.audit.log("valuation_warn", {"reason": why, "symbol": symbol, "mode": self.mode})
-                                                await self.notifier.send(f"⚠️ valuation warning (paper mode): {why}")
 
-                                    res = self.broker.open_order(symbol, side, volume)
-                                    if res.get("ok") and res.get("order"):
+                                        res = self.broker.open_order(symbol, side, volume) if self.mode == "live" else {"ok": True, "mode": "paper", "simulated": True, "symbol": symbol, "side": side, "lot": volume}
+                                        self.audit.log("auto_open_local", {"strategy": st_name, "signal": sig.__dict__, "result": res})
+                                        self.last_auto_ts = now
+                                        traded = bool(res.get("ok"))
+                                        if traded:
+                                            await self.notifier.send(f"✅ {('PAPER TRADE' if self.mode=='paper' else 'EXECUTED')} {symbol} {side.upper()} | lot={volume} | mode={self.mode}")
+                                            break
+                                        continue
+
+                                    ticks = self.broker.get_ticks() or {}
+                                    ext_ctx = build_market_context(
+                                        symbol=sym,
+                                        mode=self.mode,
+                                        session=chosen_market.get("session", "off_hours"),
+                                        risk_params={
+                                            "max_risk_per_trade": settings.max_risk_per_trade,
+                                            "max_daily_loss": settings.max_daily_loss,
+                                            "max_open_positions": settings.max_concurrent_positions,
+                                            "max_trades_per_day": settings.max_trades_per_day,
+                                        },
+                                        balance=bal,
+                                        positions=positions,
+                                        ticks=ticks,
+                                        candles_m5=chosen_market.get("candles_m5", []),
+                                        candles_m15=chosen_market.get("candles_m15", []),
+                                    )
+
+                                    self.audit.log("analysis_cycle", {"symbol": sym, "market_context": ext_ctx, "mode": self.mode})
+
+                                    # hard metadata gate
+                                    ok_val, why_val = self._validate_symbol_valuation(chosen_market, sym)
+                                    if not ok_val and (self.mode == "live" or str(settings.paper_valuation_policy).lower().strip() == "block"):
+                                        self.audit.log("valuation_block", {"symbol": sym, "reason": why_val, "mode": self.mode})
+                                        await self.notifier.send(f"🚫 HOLD {sym}: {why_val}")
+                                        continue
+
+                                    if (settings.dexter_enabled and not dexter_ok) or (settings.trading_agents_enabled and not committee_ok):
+                                        await self.notifier.send(f"⏸ HOLD {sym}: external services unavailable")
+                                        continue
+
+                                    dexter_report = analyze_with_dexter(sym, ext_ctx)
+                                    committee_report = analyze_with_tradingagents(sym, ext_ctx)
+                                    decision = build_unified_decision(
+                                        dexter_report,
+                                        committee_report,
+                                        sym,
+                                        min_confidence=float(settings.consensus_min_confidence),
+                                    )
+
+                                    self.audit.log(
+                                        "external_decision",
+                                        {
+                                            "symbol": sym,
+                                            "dexter": dexter_report.model_dump() if dexter_report else None,
+                                            "committee": committee_report.model_dump() if committee_report else None,
+                                            "unified": decision.model_dump(),
+                                        },
+                                    )
+
+                                    if not decision.eligible_for_risk_review or decision.final_action not in {"BUY", "SELL"}:
+                                        await self.notifier.send(
+                                            f"⏸ HOLD {sym} | {decision.reason} | dexter={decision.dexter_bias} | committee={decision.committee_action} | conf={decision.confidence:.2f} | mode={self.mode}"
+                                        )
+                                        continue
+
+                                    intent = self._build_execution_intent(sym, decision.final_action, chosen_market)
+                                    side = "buy" if intent.action == "BUY" else "sell"
+
+                                    if self.strict_point_value_validation:
+                                        ok_val, why = self._validate_symbol_valuation(chosen_market, sym)
+                                        if not ok_val:
+                                            self.audit.log("valuation_block", {"reason": why, "symbol": sym, "mode": self.mode})
+                                            await self.notifier.send(f"🚫 trade rejected (valuation ambiguity): {why}")
+                                            continue
+
+                                    if self.mode == "paper":
+                                        res = {"ok": True, "mode": "paper", "simulated": True, "symbol": sym, "side": side, "lot": intent.lot_size}
+                                    else:
+                                        res = self.broker.open_order(sym, side, float(intent.lot_size))
+
+                                    if res.get("ok") and res.get("order") and self.mode == "live":
+                                        # USD -> points conversion preserved from strategy risk model
+                                        pv = float(chosen_market.get("point_value", 0.0) or 0.0)
+                                        denom = max(intent.lot_size * pv, 1e-9)
+                                        sl_points = intent.stop_loss_usd / denom
+                                        tp_points = intent.take_profit_usd / denom
                                         sltp_res = self.broker.set_sl_tp_by_points(
                                             ticket=int(res.get("order")),
-                                            symbol=symbol,
+                                            symbol=sym,
                                             side=side,
-                                            sl_points=float(sig.stop_loss_points),
-                                            tp_points=float(sig.take_profit_points),
+                                            sl_points=float(sl_points),
+                                            tp_points=float(tp_points),
                                         )
                                         res["sltp"] = sltp_res
 
                                         self.open_trade_ctx[int(res.get("order"))] = {
-                                            "strategy": best_strategy,
-                                            "risk_usd": float(sig.risk_amount_usd),
-                                            "reward_usd": float(sig.reward_amount_usd),
-                                            "sl_points": float(sig.stop_loss_points),
-                                            "tp_points": float(sig.take_profit_points),
-                                            "volume": float(sig.volume),
-                                            "symbol": symbol,
+                                            "strategy": "external_consensus",
+                                            "risk_usd": float(intent.stop_loss_usd),
+                                            "reward_usd": float(intent.take_profit_usd),
+                                            "sl_points": float(sl_points),
+                                            "tp_points": float(tp_points),
+                                            "volume": float(intent.lot_size),
+                                            "symbol": sym,
                                             "breakeven_done": False,
                                             "partial_done": False,
                                             "trailing_announced": False,
                                             "last_profit": 0.0,
                                         }
 
-                                    self.audit.log("auto_open", {"strategy": best_strategy, "symbol": symbol, "side": side, "lot": volume, "signal": sig.__dict__, "result": res})
-                                    self.journal.append("auto_open", res, symbol=symbol, side=side, lot=volume, ticket=res.get("order") or "")
+                                    self.audit.log("execution_intent", {"intent": intent.model_dump(), "result": res})
                                     self.last_auto_ts = now
+                                    traded = bool(res.get("ok"))
 
-                                    meta = sig.meta if isinstance(sig.meta, dict) else {}
-                                    reason_parts = [
-                                        f"strategy={best_strategy}",
-                                        f"reason={sig.reason}",
-                                        f"risk=${sig.risk_amount_usd:.2f}",
-                                        f"reward=${sig.reward_amount_usd:.2f}",
-                                        f"RR=1:3",
-                                        f"SLpts={sig.stop_loss_points:.2f}",
-                                        f"TPpts={sig.take_profit_points:.2f}",
-                                    ]
-                                    if meta.get('model'):
-                                        reason_parts.append(f"Model={meta.get('model')}")
-                                    reason = ' | '.join(reason_parts)
-                                    await self.notifier.send(f"📡 signal detected -> {best_strategy} {side} {symbol}\n🤖 auto_open lot={volume}\n{reason}\nresult: {res}")
-                                    if not res.get("ok"):
+                                    if traded:
+                                        await self.notifier.send(
+                                            f"✅ {('PAPER TRADE' if self.mode=='paper' else 'EXECUTED')} {sym} {intent.action} | lot={intent.lot_size} | SL=${intent.stop_loss_usd:.2f} | TP=${intent.take_profit_usd:.2f} | conf={decision.confidence:.2f} | mode={self.mode}"
+                                        )
+                                        break
+                                    else:
                                         await self.notifier.send(f"🚫 trade rejected by execution/risk path | {res}")
 
-                            if not best_sig and (now - self.last_no_trade_notify_ts) >= max(settings.auto_cooldown_seconds, 60):
-                                why = self._build_no_trade_reason(best_market, len(positions), now)
+                            if (not traded) and (now - self.last_no_trade_notify_ts) >= max(settings.auto_cooldown_seconds, 60):
+                                why = self._build_no_trade_reason(chosen_market, len(positions), now)
                                 self.last_no_trade_notify_ts = now
                                 self.audit.log("auto_skip", {"reason": why})
                                 await self.notifier.send(f"⏸ تخطي دخول تلقائي: {why}")
-
                 if settings.heartbeat_seconds > 0 and (now - last_hb) >= settings.heartbeat_seconds:
                     last_hb = now
                     self.audit.log("heartbeat", {"mode": self.mode})
