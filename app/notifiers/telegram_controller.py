@@ -56,7 +56,7 @@ class TelegramController:
             "• /report\n"
             "• /today\n"
             "• /risk\n"
-            "• /set_mode safe|normal|aggressive\n"
+            "• /set_mode conservative|balanced|aggressive\n"
             "• /strict_point_value on|off\n"
             "• /strategies\n"
             "• /enable smc_ict\n"

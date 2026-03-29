@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
 
     max_risk_per_trade: float = 0.02
+    risk_percent_per_trade: float = 0.02
     max_daily_loss: float = 0.05
     max_trades_per_day: int = 20
     max_concurrent_positions: int = 5
@@ -28,6 +29,10 @@ class Settings(BaseSettings):
     cooldown_after_losses: int = 0
     min_allowed_lot: float = 0.01
     max_allowed_lot: float = 1.0
+    min_lot_size: float = 0.01
+    max_lot_size: float = 1.0
+    usd_stop_per_0_01_lot: float = 5.0
+    rr_ratio: float = 3.0
 
     default_symbol: str = "EURUSD"
 
@@ -54,8 +59,9 @@ class Settings(BaseSettings):
     auto_trading_enabled: bool = False
     auto_default_symbol: str = "XAUUSD.m"
     auto_default_lot: float = 0.01
-    risk_mode: str = "normal"  # safe|normal|aggressive
+    risk_mode: str = "balanced"  # conservative|balanced|aggressive
     strict_point_value_validation: bool = True
+    require_protected_execution: bool = True
     paper_valuation_policy: str = "warn"  # warn|block
     auto_cooldown_seconds: int = 120
     report_interval_seconds: int = 3600

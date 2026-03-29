@@ -11,6 +11,8 @@ class RiskIntentResult:
 
 
 class RiskEngine:
+    """Single source of truth for trade-construction and risk sizing policy."""
+
     def __init__(
         self,
         max_risk_per_trade: float,
@@ -21,6 +23,8 @@ class RiskEngine:
         cooldown_after_losses: int = 0,
         min_lot: float = 0.01,
         max_lot: float = 1.0,
+        usd_stop_per_0_01_lot: float = 5.0,
+        rr_ratio: float = 3.0,
     ):
         self.max_risk_per_trade = max_risk_per_trade
         self.max_daily_loss = max_daily_loss
@@ -30,6 +34,8 @@ class RiskEngine:
         self.cooldown_after_losses = cooldown_after_losses
         self.min_lot = min_lot
         self.max_lot = max_lot
+        self.usd_stop_per_0_01_lot = usd_stop_per_0_01_lot
+        self.rr_ratio = rr_ratio
 
     def allow_trade(self, stats: dict) -> tuple[bool, str]:
         if stats.get("daily_loss_pct", 0) >= self.max_daily_loss:
@@ -45,11 +51,19 @@ class RiskEngine:
             return False, "loss cooldown active"
         return True, "ok"
 
-    def _validate_symbol_valuation(self, symbol_state: dict) -> tuple[bool, str]:
+    def validate_symbol_valuation(self, symbol_state: dict) -> tuple[bool, str]:
         pv = float(symbol_state.get("point_value", 0.0) or 0.0)
         ps = float(symbol_state.get("point_size", 0.0) or 0.0)
+        symbol = symbol_state.get("symbol", "?")
         if pv <= 0 or ps <= 0:
-            return False, f"ambiguous valuation (point_value={pv}, point_size={ps})"
+            return False, f"ambiguous valuation for {symbol} (point_value={pv}, point_size={ps})"
+        return True, "ok"
+
+    def validate_trade_bounds(self, lot: float) -> tuple[bool, str]:
+        if float(lot) < float(self.min_lot):
+            return False, f"lot below minimum ({lot} < {self.min_lot})"
+        if float(lot) > float(self.max_lot):
+            return False, f"lot above maximum ({lot} > {self.max_lot})"
         return True, "ok"
 
     def _mode_multiplier(self, risk_mode: str) -> float:
@@ -61,17 +75,25 @@ class RiskEngine:
         return 1.0  # balanced/normal
 
     def _round_lot(self, lot: float) -> float:
-        # common FX/CFD step safety
         return round(lot, 2)
 
-    def _compute_lot(self, account_state: dict, risk_mode: str) -> float:
+    def compute_lot_size(self, account_state: dict, risk_mode: str) -> float:
         equity = float(account_state.get("equity", account_state.get("balance", 0.0)) or 0.0)
         balance = float(account_state.get("balance", equity) or equity)
         base = min(max(equity, 0.0), max(balance, 0.0))
-        # 0.01 lot roughly each $1000 of account at balanced mode, with hard caps
         raw = (base / 1000.0) * 0.01 * self._mode_multiplier(risk_mode)
         lot = self._round_lot(max(self.min_lot, min(raw, self.max_lot)))
         return max(self.min_lot, min(lot, self.max_lot))
+
+    def compute_usd_stop_loss(self, lot_size: float) -> float:
+        return float((float(lot_size) / 0.01) * float(self.usd_stop_per_0_01_lot))
+
+    def compute_usd_take_profit(self, stop_loss_usd: float) -> float:
+        return float(stop_loss_usd) * float(self.rr_ratio)
+
+    def convert_usd_risk_to_points(self, usd: float, lot: float, point_value: float) -> float:
+        denom = max(float(lot) * float(point_value), 1e-9)
+        return float(usd) / denom
 
     def build_execution_intent(
         self,
@@ -82,6 +104,7 @@ class RiskEngine:
         mode: str,
         risk_mode: str,
         strict_point_value_validation: bool = True,
+        risk_percent_override: float | None = None,
     ) -> RiskIntentResult:
         action = str(getattr(unified_decision, "final_action", "HOLD") or "HOLD").upper().strip()
         symbol = str(getattr(unified_decision, "symbol", symbol_state.get("symbol", "")) or "")
@@ -89,27 +112,26 @@ class RiskEngine:
             return RiskIntentResult(ok=False, reason="non-actionable decision")
 
         if strict_point_value_validation:
-            ok, reason = self._validate_symbol_valuation(symbol_state)
+            ok, reason = self.validate_symbol_valuation(symbol_state)
             if not ok:
                 return RiskIntentResult(ok=False, reason=reason)
 
-        lot = self._compute_lot(account_state, risk_mode)
-        # preserve user linear USD scaling example while generalizing to dynamic lot
-        stop_loss_usd = float(lot * 500.0)
-        take_profit_usd = float(stop_loss_usd * 3.0)
+        lot = self.compute_lot_size(account_state, risk_mode)
+        ok_lot, lot_reason = self.validate_trade_bounds(lot)
+        if not ok_lot:
+            return RiskIntentResult(ok=False, reason=lot_reason)
+
+        stop_loss_usd = self.compute_usd_stop_loss(lot)
+        take_profit_usd = self.compute_usd_take_profit(stop_loss_usd)
 
         intent = ExecutionIntent(
             symbol=symbol,
             action=action,
             mode=mode,
-            risk_percent=float(self.max_risk_per_trade),
+            risk_percent=float(risk_percent_override if risk_percent_override is not None else self.max_risk_per_trade),
             stop_loss_usd=stop_loss_usd,
             take_profit_usd=take_profit_usd,
             lot_size=float(lot),
             rationale="risk_engine_intent",
         )
         return RiskIntentResult(ok=True, reason="ok", intent=intent)
-
-    def usd_to_points(self, usd: float, lot: float, point_value: float) -> float:
-        denom = max(float(lot) * float(point_value), 1e-9)
-        return float(usd) / denom
