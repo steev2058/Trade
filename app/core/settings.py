@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     max_daily_loss: float = 0.05
     max_trades_per_day: int = 20
     max_concurrent_positions: int = 5
+    min_balance_protection: float = 0.0
+    cooldown_after_losses: int = 0
 
     default_symbol: str = "EURUSD"
 

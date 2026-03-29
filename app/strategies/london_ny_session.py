@@ -15,13 +15,17 @@ class LondonNySessionStrategy(Strategy):
         if not side:
             return []
 
+        volume, risk_usd, reward_usd, sl_points, tp_points = self._risk_pack(market)
         return [
             Signal(
                 symbol=market.get("symbol", "EURUSD"),
                 side=side,
                 confidence=0.6,
-                stop_loss_points=100,
-                take_profit_points=140,
-                reason="london_ny_overlap_breakout_scaffold",
+                stop_loss_points=sl_points,
+                take_profit_points=tp_points,
+                volume=volume,
+                reason="london_ny_overlap_breakout",
+                risk_amount_usd=risk_usd,
+                reward_amount_usd=reward_usd,
             )
         ]

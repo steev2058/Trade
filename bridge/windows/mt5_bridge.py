@@ -16,6 +16,7 @@ MT5_LOGIN = int(os.getenv("MT5_LOGIN", "0"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
 MT5_PATH = os.getenv("MT5_PATH", "")
+WATCH_SYMBOLS = [s.strip() for s in os.getenv("WATCH_SYMBOLS", "XAUUSD.m,BRENT.m").split(',') if s.strip()]
 
 
 def now_iso():
@@ -43,6 +44,28 @@ def connect_mt5():
 def get_snapshot():
     acc = mt5.account_info()
     positions = mt5.positions_get() or []
+
+    ticks = {}
+    for sym in WATCH_SYMBOLS:
+        mt5.symbol_select(sym, True)
+        t = mt5.symbol_info_tick(sym)
+        info = mt5.symbol_info(sym)
+        if t is not None:
+            point_size = float(getattr(info, 'point', 0.0)) if info is not None else 0.0
+            tick_size = float(getattr(info, 'trade_tick_size', 0.0)) if info is not None else 0.0
+            tick_value = float(getattr(info, 'trade_tick_value', 0.0)) if info is not None else 0.0
+            if tick_size > 0 and point_size > 0:
+                point_value = tick_value * (point_size / tick_size)
+            else:
+                point_value = 0.0
+            ticks[sym] = {
+                "bid": float(getattr(t, 'bid', 0.0)),
+                "ask": float(getattr(t, 'ask', 0.0)),
+                "last": float(getattr(t, 'last', 0.0)) if float(getattr(t, 'last', 0.0)) > 0 else float(getattr(t, 'bid', 0.0)),
+                "point_size": point_size,
+                "point_value": point_value,
+            }
+
     return {
         "ts": now_iso(),
         "connected": acc is not None,
@@ -59,6 +82,7 @@ def get_snapshot():
             }
             for p in positions
         ],
+        "ticks": ticks,
     }
 
 

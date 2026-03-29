@@ -107,6 +107,22 @@ class MT5Adapter:
             "mode": mode,
         }
 
+    def get_ticks(self) -> dict:
+        st = self._bridge_state()
+        if st and st.get("snapshot"):
+            return st["snapshot"].get("ticks", {}) or {}
+        return {}
+
+    def get_symbol_specs(self, symbol: str) -> dict:
+        ticks = self.get_ticks() or {}
+        t = ticks.get(symbol, {})
+        return {
+            "bid": float(t.get("bid", 0.0) or 0.0),
+            "ask": float(t.get("ask", 0.0) or 0.0),
+            "point_size": float(t.get("point_size", 0.0) or 0.0),
+            "point_value": float(t.get("point_value", 0.0) or 0.0),
+        }
+
     def get_positions(self) -> list[dict]:
         st = self._bridge_state()
         if st and st.get("snapshot"):
@@ -186,6 +202,20 @@ class MT5Adapter:
         if self._bridge_enabled():
             return self._bridge_send('/bridge/command/sl_tp', {"ticket": int(ticket), "sl": float(sl), "tp": float(tp)})
         return {"ok": False, "note": "bridge not enabled"}
+
+    def set_sl_tp_by_points(self, ticket: int, symbol: str, side: str, sl_points: float, tp_points: float) -> dict:
+        specs = self.get_symbol_specs(symbol)
+        point = float(specs.get("point_size", 0.0) or 0.0)
+        bid = float(specs.get("bid", 0.0) or 0.0)
+        ask = float(specs.get("ask", 0.0) or 0.0)
+        if point <= 0 or (bid <= 0 and ask <= 0):
+            return {"ok": False, "note": "missing market specs for sl/tp", "symbol": symbol}
+
+        is_buy = str(side).lower() == "buy"
+        entry = ask if is_buy else bid
+        sl = entry - (sl_points * point) if is_buy else entry + (sl_points * point)
+        tp = entry + (tp_points * point) if is_buy else entry - (tp_points * point)
+        return self.set_sl_tp(int(ticket), float(sl), float(tp))
 
     def close_all_positions(self) -> dict:
         if self._bridge_enabled():

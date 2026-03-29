@@ -67,6 +67,8 @@ class TradingRunner:
             settings.max_daily_loss,
             settings.max_trades_per_day,
             settings.max_concurrent_positions,
+            settings.min_balance_protection,
+            settings.cooldown_after_losses,
         )
         self.broker = MT5Adapter(
             settings.mt5_login,
@@ -335,6 +337,8 @@ class TradingRunner:
 
         symbol = symbol_override or settings.auto_default_symbol or settings.default_symbol
         series = list(self.price_history.get(symbol, []))
+        specs = self.broker.get_symbol_specs(symbol)
+        point_value = float(specs.get("point_value", 0.0) or 0.0)
         ema9 = self._ema(series, 9) if series else 0.0
         ema21 = self._ema(series, 21) if series else 0.0
         rsi7 = self._rsi(series, 7) if series else 50.0
@@ -356,6 +360,9 @@ class TradingRunner:
             "session": session,
             "hour_utc": now_utc.hour,
             "minute_utc": now_utc.minute,
+            "ict_killzones_enabled": bool(settings.ict_killzones_enabled),
+            "ict_london_killzone_utc": settings.ict_london_killzone_utc,
+            "ict_newyork_killzone_utc": settings.ict_newyork_killzone_utc,
             "volatility": "medium",
             "news_high_impact": False,
             "bias": bias,
@@ -366,6 +373,8 @@ class TradingRunner:
             "ema21": ema21,
             "rsi7": rsi7,
             "last_price": series[-1] if series else 0.0,
+            "point_value": point_value,
+            "point_size": float(specs.get("point_size", 0.0) or 0.0),
             "candles_m5": candles_m5,
             "candles_m15": candles_m15,
         }
@@ -391,10 +400,13 @@ class TradingRunner:
                 self._check_daily_drawdown_stop(now)
                 self._check_daily_profit_lock(now)
                 positions = self.broker.get_positions()
+                bal = self.broker.get_balance()
                 stats = {
                     "daily_loss_pct": 0,
                     "trades_today": 0,
                     "open_positions": len(positions),
+                    "balance": float(bal.get("balance", 0.0) or 0.0),
+                    "consecutive_losses": 0,
                 }
                 if self.paused:
                     pass
@@ -439,14 +451,33 @@ class TradingRunner:
 
                                 if signals:
                                     sig = signals[0]
-                                    side = sig.get('side', 'buy')
-                                    symbol = sig.get('symbol', chosen_market.get('symbol', settings.auto_default_symbol))
-                                    res = self.broker.open_order(symbol, side, settings.auto_default_lot)
-                                    self.audit.log("auto_open", {"symbol": symbol, "side": side, "lot": settings.auto_default_lot, "signal": sig, "result": res})
-                                    self.journal.append("auto_open", res, symbol=symbol, side=side, lot=settings.auto_default_lot, ticket=res.get("order") or "")
+                                    side = sig.side
+                                    symbol = sig.symbol or chosen_market.get('symbol', settings.auto_default_symbol)
+                                    volume = float(sig.volume)
+                                    res = self.broker.open_order(symbol, side, volume)
+                                    if res.get("ok") and res.get("order"):
+                                        sltp_res = self.broker.set_sl_tp_by_points(
+                                            ticket=int(res.get("order")),
+                                            symbol=symbol,
+                                            side=side,
+                                            sl_points=float(sig.stop_loss_points),
+                                            tp_points=float(sig.take_profit_points),
+                                        )
+                                        res["sltp"] = sltp_res
+
+                                    self.audit.log("auto_open", {"symbol": symbol, "side": side, "lot": volume, "signal": sig.__dict__, "result": res})
+                                    self.journal.append("auto_open", res, symbol=symbol, side=side, lot=volume, ticket=res.get("order") or "")
                                     self.last_auto_ts = now
-                                    meta = sig.get('meta', {}) if isinstance(sig, dict) else {}
-                                    reason_parts = []
+
+                                    meta = sig.meta if isinstance(sig.meta, dict) else {}
+                                    reason_parts = [
+                                        f"reason={sig.reason}",
+                                        f"risk=${sig.risk_amount_usd:.2f}",
+                                        f"reward=${sig.reward_amount_usd:.2f}",
+                                        f"RR=1:3",
+                                        f"SLpts={sig.stop_loss_points:.2f}",
+                                        f"TPpts={sig.take_profit_points:.2f}",
+                                    ]
                                     if meta.get('model'):
                                         reason_parts.append(f"Model={meta.get('model')}")
                                     if meta.get('liquidity'):
@@ -457,12 +488,8 @@ class TradingRunner:
                                         reason_parts.append(f"SR({meta.get('support'):.2f}/{meta.get('resistance'):.2f})")
                                     if isinstance(meta.get('fvg'), dict):
                                         reason_parts.append(f"FVG-{meta['fvg'].get('type')}")
-                                    if 'ema9' in chosen_market and 'ema21' in chosen_market:
-                                        reason_parts.append(f"EMA9={chosen_market.get('ema9'):.2f} / EMA21={chosen_market.get('ema21'):.2f}")
-                                    if 'rsi7' in chosen_market:
-                                        reason_parts.append(f"RSI7={chosen_market.get('rsi7'):.2f}")
-                                    reason = ' | '.join(reason_parts) if reason_parts else 'signal-trigger'
-                                    await self.notifier.send(f"🤖 auto_open ({side} {symbol}) lot={settings.auto_default_lot}\nreason: {reason}\nresult: {res}")
+                                    reason = ' | '.join(reason_parts)
+                                    await self.notifier.send(f"🤖 auto_open ({side} {symbol}) lot={volume}\n{reason}\nresult: {res}")
 
                             if not signals and (now - self.last_no_trade_notify_ts) >= max(settings.auto_cooldown_seconds, 60):
                                 why = self._build_no_trade_reason(chosen_market, len(positions), now)

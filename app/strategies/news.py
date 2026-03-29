@@ -13,13 +13,17 @@ class NewsStrategy(Strategy):
         if not side:
             return []
 
+        volume, risk_usd, reward_usd, sl_points, tp_points = self._risk_pack(market)
         return [
             Signal(
                 symbol=market.get("symbol", "EURUSD"),
                 side=side,
                 confidence=0.55,
-                stop_loss_points=130,
-                take_profit_points=180,
-                reason="news_impact_sentiment_scaffold",
+                stop_loss_points=sl_points,
+                take_profit_points=tp_points,
+                volume=volume,
+                reason="news_impact_sentiment",
+                risk_amount_usd=risk_usd,
+                reward_amount_usd=reward_usd,
             )
         ]

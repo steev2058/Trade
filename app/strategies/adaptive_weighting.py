@@ -18,13 +18,17 @@ class AdaptiveWeightingStrategy(Strategy):
 
         side = "buy" if buy_score > sell_score else "sell"
         confidence = min(max(abs(buy_score - sell_score), 0.5), 0.8)
+        volume, risk_usd, reward_usd, sl_points, tp_points = self._risk_pack(market)
         return [
             Signal(
                 symbol=market.get("symbol", "EURUSD"),
                 side=side,
                 confidence=confidence,
-                stop_loss_points=110,
-                take_profit_points=170,
-                reason="adaptive_weighting_consensus_scaffold",
+                stop_loss_points=sl_points,
+                take_profit_points=tp_points,
+                volume=volume,
+                reason="adaptive_weighting_consensus",
+                risk_amount_usd=risk_usd,
+                reward_amount_usd=reward_usd,
             )
         ]
