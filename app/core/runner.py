@@ -25,6 +25,7 @@ from app.agents.tradingagents_client import analyze_with_tradingagents
 from app.decision.consensus import build_unified_decision
 from app.services.external_agent_health import check_dexter_health, check_tradingagents_health
 from app.services.market_context import build_market_context
+from app.execution.protected_executor import execute_protected_trade
 
 
 class TradingRunner:
@@ -79,14 +80,16 @@ class TradingRunner:
             },
         )
         self.risk = RiskEngine(
-            settings.max_risk_per_trade,
+            settings.risk_percent_per_trade if settings.risk_percent_per_trade else settings.max_risk_per_trade,
             settings.max_daily_loss,
             settings.max_trades_per_day,
             settings.max_concurrent_positions,
             settings.min_balance_protection,
             settings.cooldown_after_losses,
-            settings.min_allowed_lot,
-            settings.max_allowed_lot,
+            settings.min_lot_size if settings.min_lot_size else settings.min_allowed_lot,
+            settings.max_lot_size if settings.max_lot_size else settings.max_allowed_lot,
+            settings.usd_stop_per_0_01_lot,
+            settings.rr_ratio,
         )
         self.broker = MT5Adapter(
             settings.mt5_login,
@@ -202,16 +205,22 @@ class TradingRunner:
         return "✅ watch_symbols=" + ",".join(self.watch_symbols)
 
     def _risk_text(self) -> str:
-        aggressive = self.risk_mode == "aggressive"
-        vol = 0.02 if aggressive else 0.01
+        if self.risk_mode == "aggressive":
+            vol = 0.02
+        elif self.risk_mode in {"conservative", "safe"}:
+            vol = 0.01
+        else:
+            vol = 0.01
         risk_usd = vol * 500
         reward_usd = risk_usd * 3
         return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={self.strict_point_value_validation} | paper_policy={settings.paper_valuation_policy}"
 
     def _set_risk_mode(self, mode: str) -> str:
         m = (mode or "").lower().strip()
-        if m not in {"safe", "normal", "aggressive"}:
-            return "Use: /set_mode safe|normal|aggressive"
+        if m not in {"safe", "conservative", "normal", "balanced", "aggressive"}:
+            return "Use: /set_mode conservative|balanced|aggressive"
+        if m in {"safe", "normal"}:
+            m = "balanced" if m == "normal" else "conservative"
         self.risk_mode = m
         self.audit.log("set_risk_mode", {"mode": m})
         return f"✅ risk mode set to {m}"
@@ -455,80 +464,13 @@ class TradingRunner:
         return candles
 
     def _validate_symbol_valuation(self, market: dict, symbol: str) -> tuple[bool, str]:
-        pv = float(market.get("point_value", 0.0) or 0.0)
-        ps = float(market.get("point_size", 0.0) or 0.0)
-        if pv > 0 and ps > 0:
-            return True, "ok"
-        return False, f"ambiguous valuation for {symbol} (point_value={pv}, point_size={ps})"
-
-    def _execute_protected_trade(self, intent, market_context: dict, decision_confidence: float):
-        symbol = intent.symbol
-        side = "buy" if intent.action == "BUY" else "sell"
-
-        ok_val, why_val = self._validate_symbol_valuation(market_context, symbol)
-        if not ok_val:
-            return {"ok": False, "stage": "valuation", "reason": why_val}
-
-        pv = float(market_context.get("point_value", 0.0) or 0.0)
-        if pv <= 0:
-            return {"ok": False, "stage": "valuation", "reason": "invalid point_value"}
-
-        sl_points = self.risk.usd_to_points(intent.stop_loss_usd, intent.lot_size, pv)
-        tp_points = self.risk.usd_to_points(intent.take_profit_usd, intent.lot_size, pv)
-        if sl_points <= 0 or tp_points <= 0:
-            return {"ok": False, "stage": "sizing", "reason": "invalid sl/tp points"}
-
-        if self.mode == "paper":
-            return {
-                "ok": True,
-                "mode": "paper",
-                "simulated": True,
+        return self.risk.validate_symbol_valuation(
+            {
                 "symbol": symbol,
-                "side": side,
-                "lot": intent.lot_size,
-                "protected": True,
-                "sl_points": sl_points,
-                "tp_points": tp_points,
-                "confidence": decision_confidence,
+                "point_value": market.get("point_value", 0.0),
+                "point_size": market.get("point_size", 0.0),
             }
-
-        open_res = self.broker.open_order(symbol, side, float(intent.lot_size))
-        if not open_res.get("ok") or not open_res.get("order"):
-            return {"ok": False, "stage": "open", "reason": "open failed", "open_result": open_res}
-
-        ticket = int(open_res.get("order"))
-        sltp_res = self.broker.set_sl_tp_by_points(
-            ticket=ticket,
-            symbol=symbol,
-            side=side,
-            sl_points=float(sl_points),
-            tp_points=float(tp_points),
         )
-        if not sltp_res.get("ok"):
-            # fail-safe: close immediately to avoid unprotected position
-            close_res = self.broker.close_ticket(ticket)
-            return {
-                "ok": False,
-                "stage": "protect",
-                "reason": "failed to attach sl/tp; position closed",
-                "open_result": open_res,
-                "sltp_result": sltp_res,
-                "close_result": close_res,
-            }
-
-        return {
-            "ok": True,
-            "mode": "live",
-            "symbol": symbol,
-            "side": side,
-            "lot": intent.lot_size,
-            "order": ticket,
-            "protected": True,
-            "sl_points": sl_points,
-            "tp_points": tp_points,
-            "sltp": sltp_res,
-            "confidence": decision_confidence,
-        }
 
     def _build_no_trade_reason(self, market: dict, positions_count: int, now_ts: float) -> str:
         if self.paused:
@@ -770,7 +712,7 @@ class TradingRunner:
 
                                     if not decision.eligible_for_risk_review or decision.final_action not in {"BUY", "SELL"}:
                                         await self.notifier.send(
-                                            f"⏸ HOLD {sym} | {decision.reason} | dexter={decision.dexter_bias} | committee={decision.committee_action} | conf={decision.confidence:.2f} | mode={self.mode}"
+                                            f"⏸ HOLD {sym} | reason={decision.reason} | align={decision.source_alignment} | dexter={decision.dexter_bias} | committee={decision.committee_action} | conf={decision.confidence:.2f} | mode={self.mode}"
                                         )
                                         continue
 
@@ -793,7 +735,16 @@ class TradingRunner:
                                         continue
 
                                     intent = risk_result.intent
-                                    res = self._execute_protected_trade(intent, chosen_market, decision.confidence)
+                                    exec_result = execute_protected_trade(
+                                        broker=self.broker,
+                                        risk_engine=self.risk,
+                                        intent=intent,
+                                        market_context=chosen_market,
+                                        strict_point_value_validation=self.strict_point_value_validation,
+                                        require_protected_execution=bool(settings.require_protected_execution),
+                                        mode=self.mode,
+                                    )
+                                    res = exec_result.to_dict()
 
                                     if res.get("ok") and res.get("order") and self.mode == "live":
                                         self.open_trade_ctx[int(res.get("order"))] = {
@@ -816,7 +767,7 @@ class TradingRunner:
 
                                     if traded:
                                         await self.notifier.send(
-                                            f"✅ {('PAPER TRADE' if self.mode=='paper' else 'EXECUTED')} {sym} {intent.action} | lot={intent.lot_size} | SL=${intent.stop_loss_usd:.2f} | TP=${intent.take_profit_usd:.2f} | conf={decision.confidence:.2f} | mode={self.mode}"
+                                            f"✅ {('PAPER TRADE' if self.mode=='paper' else 'EXECUTED')} {sym} {intent.action} | align={decision.source_alignment} | lot={intent.lot_size} | SL=${intent.stop_loss_usd:.2f} | TP=${intent.take_profit_usd:.2f} | protected={res.get('protection_attached')} | ticket={res.get('ticket_id')} | conf={decision.confidence:.2f} | mode={self.mode}"
                                         )
                                         break
                                     else:

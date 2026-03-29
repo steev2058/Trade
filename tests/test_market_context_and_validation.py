@@ -1,5 +1,6 @@
 from app.services.market_context import build_market_context
 from app.core.runner import TradingRunner
+from app.risk.engine import RiskEngine
 
 
 def test_market_context_missing_metadata_flag():
@@ -20,6 +21,7 @@ def test_market_context_missing_metadata_flag():
 
 def test_strict_point_value_ambiguity_blocked():
     r = TradingRunner.__new__(TradingRunner)
+    r.risk = RiskEngine(0.02, 0.05, 20, 5)
     ok, reason = TradingRunner._validate_symbol_valuation(r, {"point_value": 0.0, "point_size": 0.0}, "XAUUSD")
     assert ok is False
     assert "ambiguous valuation" in reason

@@ -1,8 +1,6 @@
-from types import SimpleNamespace
-
 from app.risk.engine import RiskEngine
 from app.decision.schemas import UnifiedDecision
-from app.core.runner import TradingRunner
+from app.execution.protected_executor import execute_protected_trade
 
 
 class FakeBroker:
@@ -88,44 +86,98 @@ def test_build_execution_intent_blocks_ambiguous_valuation():
     assert rr.ok is False
 
 
-def _runner_for_exec(mode="live", open_ok=True, protect_ok=True):
-    r = TradingRunner.__new__(TradingRunner)
-    r.mode = mode
-    r.broker = FakeBroker(open_ok=open_ok, protect_ok=protect_ok)
-    r.risk = RiskEngine(0.02, 0.05, 20, 5)
-    r._validate_symbol_valuation = TradingRunner._validate_symbol_valuation.__get__(r, TradingRunner)
-    return r
-
-
 def test_protected_execution_attaches_sltp_after_open():
-    r = _runner_for_exec(mode="live", open_ok=True, protect_ok=True)
-    intent = SimpleNamespace(symbol="XAUUSD", action="BUY", lot_size=0.01, stop_loss_usd=5.0, take_profit_usd=15.0)
-    res = TradingRunner._execute_protected_trade(r, intent, {"point_value": 1.0, "point_size": 0.01}, 0.8)
-    assert res["ok"] is True
-    assert r.broker.open_called is True
-    assert r.broker.protect_called is True
+    risk = RiskEngine(0.02, 0.05, 20, 5)
+    broker = FakeBroker(open_ok=True, protect_ok=True)
+    rr = risk.build_execution_intent(
+        account_state={"balance": 1000, "equity": 1000},
+        symbol_state={"symbol": "XAUUSD", "point_value": 1.0, "point_size": 0.01},
+        unified_decision=_decision("BUY"),
+        mode="live",
+        risk_mode="balanced",
+        strict_point_value_validation=True,
+    )
+    res = execute_protected_trade(
+        broker=broker,
+        risk_engine=risk,
+        intent=rr.intent,
+        market_context={"point_value": 1.0, "point_size": 0.01},
+        strict_point_value_validation=True,
+        require_protected_execution=True,
+        mode="live",
+    )
+    assert res.success is True
+    assert broker.open_called is True
+    assert broker.protect_called is True
 
 
 def test_protected_execution_fails_safe_when_sltp_attach_fails():
-    r = _runner_for_exec(mode="live", open_ok=True, protect_ok=False)
-    intent = SimpleNamespace(symbol="XAUUSD", action="BUY", lot_size=0.01, stop_loss_usd=5.0, take_profit_usd=15.0)
-    res = TradingRunner._execute_protected_trade(r, intent, {"point_value": 1.0, "point_size": 0.01}, 0.8)
-    assert res["ok"] is False
-    assert res["stage"] == "protect"
-    assert r.broker.close_called is True
+    risk = RiskEngine(0.02, 0.05, 20, 5)
+    broker = FakeBroker(open_ok=True, protect_ok=False)
+    rr = risk.build_execution_intent(
+        account_state={"balance": 1000, "equity": 1000},
+        symbol_state={"symbol": "XAUUSD", "point_value": 1.0, "point_size": 0.01},
+        unified_decision=_decision("BUY"),
+        mode="live",
+        risk_mode="balanced",
+        strict_point_value_validation=True,
+    )
+    res = execute_protected_trade(
+        broker=broker,
+        risk_engine=risk,
+        intent=rr.intent,
+        market_context={"point_value": 1.0, "point_size": 0.01},
+        strict_point_value_validation=True,
+        require_protected_execution=True,
+        mode="live",
+    )
+    assert res.success is False
+    assert "failed to attach" in res.reason
+    assert broker.close_called is True
 
 
 def test_paper_mode_records_simulated_trade():
-    r = _runner_for_exec(mode="paper", open_ok=True, protect_ok=True)
-    intent = SimpleNamespace(symbol="XAUUSD", action="SELL", lot_size=0.02, stop_loss_usd=10.0, take_profit_usd=30.0)
-    res = TradingRunner._execute_protected_trade(r, intent, {"point_value": 1.0, "point_size": 0.01}, 0.7)
-    assert res["ok"] is True
-    assert res["simulated"] is True
+    risk = RiskEngine(0.02, 0.05, 20, 5)
+    broker = FakeBroker(open_ok=True, protect_ok=True)
+    rr = risk.build_execution_intent(
+        account_state={"balance": 1000, "equity": 1000},
+        symbol_state={"symbol": "XAUUSD", "point_value": 1.0, "point_size": 0.01},
+        unified_decision=_decision("SELL"),
+        mode="paper",
+        risk_mode="balanced",
+        strict_point_value_validation=True,
+    )
+    res = execute_protected_trade(
+        broker=broker,
+        risk_engine=risk,
+        intent=rr.intent,
+        market_context={"point_value": 1.0, "point_size": 0.01},
+        strict_point_value_validation=True,
+        require_protected_execution=True,
+        mode="paper",
+    )
+    assert res.success is True
+    assert res.mode == "paper"
 
 
-def test_live_mode_refuses_unsafe_execution_on_valuation_ambiguity():
-    r = _runner_for_exec(mode="live", open_ok=True, protect_ok=True)
-    intent = SimpleNamespace(symbol="XAUUSD", action="BUY", lot_size=0.01, stop_loss_usd=5.0, take_profit_usd=15.0)
-    res = TradingRunner._execute_protected_trade(r, intent, {"point_value": 0.0, "point_size": 0.0}, 0.9)
-    assert res["ok"] is False
-    assert res["stage"] == "valuation"
+def test_live_mode_refuses_unsafe_execution():
+    risk = RiskEngine(0.02, 0.05, 20, 5)
+    broker = FakeBroker(open_ok=True, protect_ok=True)
+    rr = risk.build_execution_intent(
+        account_state={"balance": 1000, "equity": 1000},
+        symbol_state={"symbol": "XAUUSD", "point_value": 1.0, "point_size": 0.01},
+        unified_decision=_decision("BUY"),
+        mode="live",
+        risk_mode="balanced",
+        strict_point_value_validation=True,
+    )
+    res = execute_protected_trade(
+        broker=broker,
+        risk_engine=risk,
+        intent=rr.intent,
+        market_context={"point_value": 0.0, "point_size": 0.0},
+        strict_point_value_validation=True,
+        require_protected_execution=True,
+        mode="live",
+    )
+    assert res.success is False
