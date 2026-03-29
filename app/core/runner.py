@@ -23,7 +23,6 @@ from app.strategies.ict_signal import IctSignalStrategy
 from app.agents.dexter_client import analyze_with_dexter
 from app.agents.tradingagents_client import analyze_with_tradingagents
 from app.decision.consensus import build_unified_decision
-from app.decision.schemas import ExecutionIntent
 from app.services.external_agent_health import check_dexter_health, check_tradingagents_health
 from app.services.market_context import build_market_context
 
@@ -86,6 +85,8 @@ class TradingRunner:
             settings.max_concurrent_positions,
             settings.min_balance_protection,
             settings.cooldown_after_losses,
+            settings.min_allowed_lot,
+            settings.max_allowed_lot,
         )
         self.broker = MT5Adapter(
             settings.mt5_login,
@@ -460,21 +461,74 @@ class TradingRunner:
             return True, "ok"
         return False, f"ambiguous valuation for {symbol} (point_value={pv}, point_size={ps})"
 
-    def _build_execution_intent(self, symbol: str, action: str, market: dict) -> ExecutionIntent:
-        aggressive = bool(market.get("aggressive_mode", False))
-        lot = 0.02 if aggressive else 0.01
-        sl_usd = lot * 500.0
-        tp_usd = sl_usd * 3.0
-        return ExecutionIntent(
+    def _execute_protected_trade(self, intent, market_context: dict, decision_confidence: float):
+        symbol = intent.symbol
+        side = "buy" if intent.action == "BUY" else "sell"
+
+        ok_val, why_val = self._validate_symbol_valuation(market_context, symbol)
+        if not ok_val:
+            return {"ok": False, "stage": "valuation", "reason": why_val}
+
+        pv = float(market_context.get("point_value", 0.0) or 0.0)
+        if pv <= 0:
+            return {"ok": False, "stage": "valuation", "reason": "invalid point_value"}
+
+        sl_points = self.risk.usd_to_points(intent.stop_loss_usd, intent.lot_size, pv)
+        tp_points = self.risk.usd_to_points(intent.take_profit_usd, intent.lot_size, pv)
+        if sl_points <= 0 or tp_points <= 0:
+            return {"ok": False, "stage": "sizing", "reason": "invalid sl/tp points"}
+
+        if self.mode == "paper":
+            return {
+                "ok": True,
+                "mode": "paper",
+                "simulated": True,
+                "symbol": symbol,
+                "side": side,
+                "lot": intent.lot_size,
+                "protected": True,
+                "sl_points": sl_points,
+                "tp_points": tp_points,
+                "confidence": decision_confidence,
+            }
+
+        open_res = self.broker.open_order(symbol, side, float(intent.lot_size))
+        if not open_res.get("ok") or not open_res.get("order"):
+            return {"ok": False, "stage": "open", "reason": "open failed", "open_result": open_res}
+
+        ticket = int(open_res.get("order"))
+        sltp_res = self.broker.set_sl_tp_by_points(
+            ticket=ticket,
             symbol=symbol,
-            action=action,
-            mode=self.mode,
-            risk_percent=float(settings.max_risk_per_trade),
-            stop_loss_usd=sl_usd,
-            take_profit_usd=tp_usd,
-            lot_size=lot,
-            rationale="external-consensus-aligned",
+            side=side,
+            sl_points=float(sl_points),
+            tp_points=float(tp_points),
         )
+        if not sltp_res.get("ok"):
+            # fail-safe: close immediately to avoid unprotected position
+            close_res = self.broker.close_ticket(ticket)
+            return {
+                "ok": False,
+                "stage": "protect",
+                "reason": "failed to attach sl/tp; position closed",
+                "open_result": open_res,
+                "sltp_result": sltp_res,
+                "close_result": close_res,
+            }
+
+        return {
+            "ok": True,
+            "mode": "live",
+            "symbol": symbol,
+            "side": side,
+            "lot": intent.lot_size,
+            "order": ticket,
+            "protected": True,
+            "sl_points": sl_points,
+            "tp_points": tp_points,
+            "sltp": sltp_res,
+            "confidence": decision_confidence,
+        }
 
     def _build_no_trade_reason(self, market: dict, positions_count: int, now_ts: float) -> str:
         if self.paused:
@@ -720,42 +774,34 @@ class TradingRunner:
                                         )
                                         continue
 
-                                    intent = self._build_execution_intent(sym, decision.final_action, chosen_market)
-                                    side = "buy" if intent.action == "BUY" else "sell"
+                                    risk_result = self.risk.build_execution_intent(
+                                        account_state=bal,
+                                        symbol_state={
+                                            "symbol": sym,
+                                            "point_value": chosen_market.get("point_value", 0.0),
+                                            "point_size": chosen_market.get("point_size", 0.0),
+                                        },
+                                        unified_decision=decision,
+                                        mode=self.mode,
+                                        risk_mode=self.risk_mode,
+                                        strict_point_value_validation=self.strict_point_value_validation,
+                                    )
 
-                                    if self.strict_point_value_validation:
-                                        ok_val, why = self._validate_symbol_valuation(chosen_market, sym)
-                                        if not ok_val:
-                                            self.audit.log("valuation_block", {"reason": why, "symbol": sym, "mode": self.mode})
-                                            await self.notifier.send(f"🚫 trade rejected (valuation ambiguity): {why}")
-                                            continue
+                                    if not risk_result.ok or not risk_result.intent:
+                                        self.audit.log("risk_intent_block", {"symbol": sym, "reason": risk_result.reason})
+                                        await self.notifier.send(f"🚫 HOLD {sym}: {risk_result.reason}")
+                                        continue
 
-                                    if self.mode == "paper":
-                                        res = {"ok": True, "mode": "paper", "simulated": True, "symbol": sym, "side": side, "lot": intent.lot_size}
-                                    else:
-                                        res = self.broker.open_order(sym, side, float(intent.lot_size))
+                                    intent = risk_result.intent
+                                    res = self._execute_protected_trade(intent, chosen_market, decision.confidence)
 
                                     if res.get("ok") and res.get("order") and self.mode == "live":
-                                        # USD -> points conversion preserved from strategy risk model
-                                        pv = float(chosen_market.get("point_value", 0.0) or 0.0)
-                                        denom = max(intent.lot_size * pv, 1e-9)
-                                        sl_points = intent.stop_loss_usd / denom
-                                        tp_points = intent.take_profit_usd / denom
-                                        sltp_res = self.broker.set_sl_tp_by_points(
-                                            ticket=int(res.get("order")),
-                                            symbol=sym,
-                                            side=side,
-                                            sl_points=float(sl_points),
-                                            tp_points=float(tp_points),
-                                        )
-                                        res["sltp"] = sltp_res
-
                                         self.open_trade_ctx[int(res.get("order"))] = {
                                             "strategy": "external_consensus",
                                             "risk_usd": float(intent.stop_loss_usd),
                                             "reward_usd": float(intent.take_profit_usd),
-                                            "sl_points": float(sl_points),
-                                            "tp_points": float(tp_points),
+                                            "sl_points": float(res.get("sl_points", 0.0)),
+                                            "tp_points": float(res.get("tp_points", 0.0)),
                                             "volume": float(intent.lot_size),
                                             "symbol": sym,
                                             "breakeven_done": False,

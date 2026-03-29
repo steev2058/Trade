@@ -72,3 +72,14 @@ def test_consensus_missing_report_hold():
 def test_confidence_below_threshold_hold():
     d = build_unified_decision(_dexter("bullish"), _committee("BUY", conf=0.5), "XAUUSD", 0.75)
     assert d.final_action == "HOLD"
+
+
+def test_external_service_failure_results_in_hold():
+    # unavailable external service -> missing report -> HOLD
+    d = build_unified_decision(_dexter("bullish"), None, "XAUUSD", 0.75)
+    assert d.final_action == "HOLD"
+
+
+def test_low_confidence_results_in_hold():
+    d = build_unified_decision(_dexter("bullish", conv=0.9), _committee("BUY", conf=0.6), "XAUUSD", 0.75)
+    assert d.final_action == "HOLD"

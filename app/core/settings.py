@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     max_concurrent_positions: int = 5
     min_balance_protection: float = 0.0
     cooldown_after_losses: int = 0
+    min_allowed_lot: float = 0.01
+    max_allowed_lot: float = 1.0
 
     default_symbol: str = "EURUSD"
 
