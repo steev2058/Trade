@@ -10,17 +10,20 @@ class TelegramController:
         self.app = Application.builder().token(token).build() if self.enabled else None
         self.keyboard = ReplyKeyboardMarkup(
             [
-                ["📊 الحالة", "💰 الرصيد"],
-                ["📂 الصفقات", "📈 الربح/الخسارة"],
-                ["🟢 شراء ذهب 0.01", "🔴 بيع ذهب 0.01"],
+                ["📊 الحالة", "🧾 تقرير", "📅 اليوم"],
+                ["💰 الرصيد", "📈 الربح/الخسارة", "📂 الصفقات"],
+                ["🤖 تفعيل التلقائي", "⛔ إيقاف التلقائي"],
+                ["⚡ وضع حي", "🧪 وضع تجريبي"],
                 ["🛑 اغلاق الكل", "⏸ إيقاف", "▶️ متابعة"],
-                ["🤖 تشغيل تلقائي", "🛑 إيقاف تلقائي", "🧾 تقرير اليوم"],
-                ["🧪 وضع تجريبي", "⚡ وضع حي"],
+                ["⚙️ المخاطرة", "🎯 الوضع المتوازن", "🔥 الوضع الهجومي"],
+                ["🛡️ حماية مشددة ON", "🛡️ حماية مشددة OFF"],
+                ["🧠 الاستراتيجيات", "✅ تفعيل ICT", "🚫 تعطيل Scalper"],
+                ["🧭 الرموز", "🪙 رموز الكريبتو", "🥇 الذهب+النفط"],
                 ["ℹ️ المساعدة"],
             ],
             resize_keyboard=True,
             one_time_keyboard=False,
-            input_field_placeholder="اختر أمر من الأزرار أو اكتب /help",
+            input_field_placeholder="اختر إجراء سريع أو اكتب /help",
         )
 
     def _is_allowed(self, update: Update) -> bool:
@@ -33,38 +36,38 @@ class TelegramController:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return await self._reject(update)
-        await update.message.reply_text("Linkat MJ Trader controller online. Use /help", reply_markup=self.keyboard)
+        await update.message.reply_text("✅ لوحة التحكم جاهزة\nاستخدم الأزرار السريعة بالأسفل أو /help للتفاصيل.", reply_markup=self.keyboard)
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return await self._reject(update)
         await update.message.reply_text(
-            "الأوامر المتاحة:\n"
-            "• /status\n"
-            "• /balance\n"
-            "• /positions\n"
-            "• /pnl\n"
-            "• /pause و /resume\n"
-            "• /paper و /live CONFIRM\n"
-            "• /close_all CONFIRM\n"
-            "• /buy SYMBOL LOT\n"
-            "• /sell SYMBOL LOT\n"
-            "• /close TICKET\n"
-            "• /sl_tp TICKET SL TP\n"
-            "• /auto_on\n"
-            "• /auto_off\n"
-            "• /report\n"
-            "• /today\n"
+            "🎛️ *Linkat MJ Trader — Control Panel*\n\n"
+            "*المراقبة:*\n"
+            "• /status  • /balance  • /positions  • /pnl\n"
+            "• /today   • /report\n\n"
+            "*التشغيل:*\n"
+            "• /auto_on  • /auto_off\n"
+            "• /paper    • /live CONFIRM\n"
+            "• /pause    • /resume\n\n"
+            "*المخاطر والحماية:*\n"
             "• /risk\n"
             "• /set_mode conservative|balanced|aggressive\n"
             "• /strict_point_value on|off\n"
+            "• /close_all CONFIRM\n\n"
+            "*الاستراتيجيات والرموز:*\n"
             "• /strategies\n"
             "• /enable smc_ict\n"
             "• /disable scalper\n"
             "• /symbols\n"
             "• /set_symbols XAUUSD.m,BRENT.m,BTCUSD.m,ETHUSD.m\n\n"
-            "أو استخدم الأزرار الجاهزة بالأسفل.",
+            "*الأوامر اليدوية:*\n"
+            "• /buy SYMBOL LOT\n"
+            "• /sell SYMBOL LOT\n"
+            "• /close TICKET\n"
+            "• /sl_tp TICKET SL TP",
             reply_markup=self.keyboard,
+            parse_mode="Markdown",
         )
 
     async def on_button_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,6 +109,44 @@ class TelegramController:
             return await self.cmd_report(update, context)
         if txt == 'ℹ️ المساعدة':
             return await self.cmd_help(update, context)
+        if txt == '🧾 تقرير':
+            return await self.cmd_report(update, context)
+        if txt == '📅 اليوم':
+            return await self.cmd_today(update, context)
+        if txt == '🤖 تفعيل التلقائي':
+            return await self.cmd_auto_on(update, context)
+        if txt == '⛔ إيقاف التلقائي':
+            return await self.cmd_auto_off(update, context)
+        if txt == '⚙️ المخاطرة':
+            return await self.cmd_risk(update, context)
+        if txt == '🎯 الوضع المتوازن':
+            context.args = ['balanced']
+            return await self.cmd_set_mode(update, context)
+        if txt == '🔥 الوضع الهجومي':
+            context.args = ['aggressive']
+            return await self.cmd_set_mode(update, context)
+        if txt == '🛡️ حماية مشددة ON':
+            context.args = ['on']
+            return await self.cmd_strict_point_value(update, context)
+        if txt == '🛡️ حماية مشددة OFF':
+            context.args = ['off']
+            return await self.cmd_strict_point_value(update, context)
+        if txt == '🧠 الاستراتيجيات':
+            return await self.cmd_strategies(update, context)
+        if txt == '✅ تفعيل ICT':
+            context.args = ['smc_ict']
+            return await self.cmd_enable(update, context)
+        if txt == '🚫 تعطيل Scalper':
+            context.args = ['scalper']
+            return await self.cmd_disable(update, context)
+        if txt == '🧭 الرموز':
+            return await self.cmd_symbols(update, context)
+        if txt == '🪙 رموز الكريبتو':
+            context.args = ['BTCUSD.m,ETHUSD.m']
+            return await self.cmd_set_symbols(update, context)
+        if txt == '🥇 الذهب+النفط':
+            context.args = ['XAUUSD.m,BRENT.m']
+            return await self.cmd_set_symbols(update, context)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
