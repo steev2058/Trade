@@ -71,10 +71,11 @@ Linkat MJ Trader هو **محرك تنفيذ تداول آمن** مع MT5 + Teleg
 ## 4) Project Structure
 
 - `app/main.py` — entrypoint
-- `app/core/runner.py` — loop orchestration + decision + execution
+- `app/core/runner.py` — orchestration-only loop (gate -> intelligence -> risk intent -> protected execution)
 - `app/core/settings.py` — config/env
-- `app/risk/engine.py` — risk guardrails
+- `app/risk/engine.py` — single source of truth for lot sizing + USD SL/TP + intent construction
 - `app/brokers/mt5_adapter.py` — MT5 bridge adapter
+- `app/execution/protected_executor.py` — deterministic protected execution (open -> attach SL/TP -> verify/fail-safe)
 - `bridge/windows/mt5_bridge.py` — Windows MT5 execution bridge
 - `app/storage/audit.py` — JSONL audit logger
 
@@ -115,7 +116,7 @@ Linkat MJ Trader هو **محرك تنفيذ تداول آمن** مع MT5 + Teleg
 - `/sl_tp TICKET SL TP`
 - `/symbols`, `/set_symbols A,B,C`
 - `/risk`
-- `/set_mode safe|normal|aggressive`
+- `/set_mode conservative|balanced|aggressive`
 - `/strategies`
 - `/enable <strategy>`
 - `/disable <strategy>`
@@ -135,7 +136,12 @@ Linkat MJ Trader هو **محرك تنفيذ تداول آمن** مع MT5 + Teleg
 ### Risk / Execution
 - `STRICT_POINT_VALUE_VALIDATION=true|false`
 - `PAPER_VALUATION_POLICY=warn|block`
-- `RISK_MODE=safe|normal|aggressive`
+- `RISK_MODE=conservative|balanced|aggressive`
+- `RISK_PERCENT_PER_TRADE`
+- `MIN_LOT_SIZE`, `MAX_LOT_SIZE`
+- `USD_STOP_PER_0_01_LOT`
+- `RR_RATIO`
+- `REQUIRE_PROTECTED_EXECUTION=true|false`
 - `MAX_DAILY_LOSS`
 - `MAX_TRADES_PER_DAY`
 - `MAX_CONCURRENT_POSITIONS`
@@ -184,7 +190,7 @@ python -m app.main --mode live --confirm-live YES_I_ACCEPT_LIVE_TRADING
 ./.venv/bin/python -m pytest -q tests
 ```
 
-يشمل اختبارات consensus + حالات HOLD safety + valuation/context.
+يشمل اختبارات consensus + حالات HOLD safety + valuation/context + protected execution flow.
 
 ---
 
