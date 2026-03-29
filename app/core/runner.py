@@ -499,6 +499,16 @@ class TradingRunner:
         )
         return result.to_dict()
 
+    def _expected_side_label(self, market: dict) -> str:
+        ema9 = float(market.get('ema9', 0.0) or 0.0)
+        ema21 = float(market.get('ema21', 0.0) or 0.0)
+        rsi7 = float(market.get('rsi7', 50.0) or 50.0)
+        if ema9 > ema21 and rsi7 >= 50:
+            return "شراء"
+        if ema9 < ema21 and rsi7 <= 50:
+            return "بيع"
+        return "محايد"
+
     def _build_no_trade_reason(self, market: dict, positions_count: int, now_ts: float) -> str:
         if self.paused:
             return "التداول موقوف حالياً"
@@ -514,7 +524,8 @@ class TradingRunner:
         ema9 = float(market.get('ema9', 0.0))
         ema21 = float(market.get('ema21', 0.0))
         rsi7 = float(market.get('rsi7', 50.0))
-        return f"الإشارة غير مكتملة الشروط (EMA9={ema9:.2f}, EMA21={ema21:.2f}, RSI7={rsi7:.2f})"
+        side_lbl = self._expected_side_label(market)
+        return f"الإشارة غير مكتملة الشروط | الاتجاه المتوقع: {side_lbl} (EMA9={ema9:.2f}, EMA21={ema21:.2f}, RSI7={rsi7:.2f})"
 
     def _build_market_context(self, symbol_override: str | None = None) -> dict:
         now_utc = datetime.now(timezone.utc)
