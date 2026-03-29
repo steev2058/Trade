@@ -25,7 +25,7 @@ class RegimeSwitcher:
         for name in name_to_strategy:
             base = 0.35
             if name == "smc_ict":
-                base = 0.9 if session in {"london", "new_york", "london_ny_overlap"} else 0.2
+                base = 0.9 if session in {"asia", "london", "new_york", "london_ny_overlap"} else 0.2
                 if noisy:
                     base -= 0.2
             elif name == "scalper":

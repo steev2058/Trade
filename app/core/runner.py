@@ -302,6 +302,16 @@ class TradingRunner:
             self.audit.log("broker_connected", {"server": settings.mt5_server})
         self.audit.log("control_mode_switch", {"mode": self.mode})
 
+    def _in_hhmm_range(self, hh: int, mm: int, start_end: str) -> bool:
+        try:
+            cur = hh * 60 + mm
+            a, b = str(start_end).split('-')
+            ah, am = [int(x) for x in a.split(':')]
+            bh, bm = [int(x) for x in b.split(':')]
+            return (ah * 60 + am) <= cur <= (bh * 60 + bm)
+        except Exception:
+            return False
+
     def _ema(self, values, period: int):
         if not values:
             return 0.0
@@ -531,7 +541,9 @@ class TradingRunner:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
 
-        if 7 <= hour < 12:
+        if self._in_hhmm_range(now_utc.hour, now_utc.minute, settings.asia_session_utc):
+            session = "asia"
+        elif 7 <= hour < 12:
             session = "london"
         elif 12 <= hour < 16:
             session = "london_ny_overlap"
@@ -573,8 +585,10 @@ class TradingRunner:
             "ict_killzones_enabled": bool(settings.ict_killzones_enabled),
             "ict_london_killzone_utc": settings.ict_london_killzone_utc,
             "ict_newyork_killzone_utc": settings.ict_newyork_killzone_utc,
+            "asia_session_utc": settings.asia_session_utc,
+            "asia_region_markets": ["Australia", "Japan", "Korea", "China"],
             "volatility": "medium",
-            "news_high_impact": False,
+            "news_high_impact": bool(settings.asia_news_block_enabled and session == "asia" and settings.asia_news_high_impact),
             "bias": bias,
             "micro_momentum": micro,
             "session_breakout": "none",

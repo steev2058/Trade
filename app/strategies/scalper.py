@@ -31,7 +31,7 @@ class ScalperStrategy(Strategy):
         return float(100 - 100 / (1 + rs))
 
     async def generate(self, market: dict) -> list[Signal]:
-        if market.get("session") not in {"london", "new_york", "london_ny_overlap"}:
+        if market.get("session") not in {"asia", "london", "new_york", "london_ny_overlap"}:
             return []
         if market.get("news_high_impact", False):
             return []

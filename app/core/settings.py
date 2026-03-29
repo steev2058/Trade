@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     ict_london_killzone_utc: str = "07:00-10:00"
     ict_newyork_killzone_utc: str = "12:00-15:00"
 
+    asia_session_utc: str = "01:00-06:00"
+    asia_news_block_enabled: bool = True
+    asia_news_high_impact: bool = False  # set true manually/integration when AU/JP/KR/CN high-impact news is active
+
     tick_interval_seconds: int = 3
     heartbeat_seconds: int = 60
 
