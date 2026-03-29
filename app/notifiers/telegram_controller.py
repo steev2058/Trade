@@ -57,6 +57,7 @@ class TelegramController:
             "• /today\n"
             "• /risk\n"
             "• /set_mode safe|normal|aggressive\n"
+            "• /strict_point_value on|off\n"
             "• /strategies\n"
             "• /enable smc_ict\n"
             "• /disable scalper\n"
@@ -236,6 +237,12 @@ class TelegramController:
             return await self._reject(update)
         await update.message.reply_text(self.callbacks["today"]())
 
+    async def cmd_strict_point_value(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        val = context.args[0] if context.args else ""
+        await update.message.reply_text(self.callbacks["strict_point_value"](val))
+
     async def cmd_strategies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return await self._reject(update)
@@ -284,6 +291,7 @@ class TelegramController:
         self.app.add_handler(CommandHandler("report", self.cmd_report))
         self.app.add_handler(CommandHandler("today", self.cmd_today))
         self.app.add_handler(CommandHandler("risk", self.cmd_risk))
+        self.app.add_handler(CommandHandler("strict_point_value", self.cmd_strict_point_value))
         self.app.add_handler(CommandHandler("set_mode", self.cmd_set_mode))
         self.app.add_handler(CommandHandler("strategies", self.cmd_strategies))
         self.app.add_handler(CommandHandler("enable", self.cmd_enable))

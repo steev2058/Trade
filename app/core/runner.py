@@ -36,6 +36,7 @@ class TradingRunner:
         self.last_no_trade_notify_ts = 0.0
         self.watch_symbols = [s.strip() for s in str(settings.watch_symbols or '').split(',') if s.strip()]
         self.risk_mode = (settings.risk_mode or "normal").lower().strip()
+        self.strict_point_value_validation = bool(settings.strict_point_value_validation)
         self.price_history = defaultdict(lambda: deque(maxlen=200))
         self.strategy_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "n": 0})
         self.open_trade_ctx = {}  # ticket -> context
@@ -69,6 +70,7 @@ class TradingRunner:
                 "strategies": self._strategies,
                 "enable_strategy": self._enable_strategy,
                 "disable_strategy": self._disable_strategy,
+                "strict_point_value": self._set_strict_point_value,
             },
         )
         self.risk = RiskEngine(
@@ -197,7 +199,7 @@ class TradingRunner:
         vol = 0.02 if aggressive else 0.01
         risk_usd = vol * 500
         reward_usd = risk_usd * 3
-        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={settings.strict_point_value_validation} | paper_policy={settings.paper_valuation_policy}"
+        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3 | strict_point_value={self.strict_point_value_validation} | paper_policy={settings.paper_valuation_policy}"
 
     def _set_risk_mode(self, mode: str) -> str:
         m = (mode or "").lower().strip()
@@ -239,6 +241,14 @@ class TradingRunner:
         self.strategy_enabled[n] = False
         self.audit.log("disable_strategy", {"strategy": n})
         return f"🛑 disabled {n}"
+
+    def _set_strict_point_value(self, val: str) -> str:
+        v = (val or "").strip().lower()
+        if v not in {"on", "off"}:
+            return "Use: /strict_point_value on|off"
+        self.strict_point_value_validation = (v == "on")
+        self.audit.log("strict_point_value_toggle", {"enabled": self.strict_point_value_validation})
+        return f"✅ strict_point_value={self.strict_point_value_validation}"
 
     def _pause(self):
         self.paused = True
@@ -609,7 +619,7 @@ class TradingRunner:
                                     symbol = sig.symbol or best_market.get('symbol', settings.auto_default_symbol)
                                     volume = float(sig.volume)
 
-                                    if settings.strict_point_value_validation:
+                                    if self.strict_point_value_validation:
                                         ok_val, why = self._validate_symbol_valuation(best_market, symbol)
                                         if not ok_val:
                                             if self.mode == "live":
