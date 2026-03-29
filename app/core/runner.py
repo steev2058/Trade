@@ -547,7 +547,7 @@ class TradingRunner:
             session = "london"
         elif 12 <= hour < 16:
             session = "london_ny_overlap"
-        elif 16 <= hour < 21:
+        elif 16 <= hour < 23:
             session = "new_york"
         else:
             session = "off_hours"
