@@ -21,6 +21,7 @@ class TelegramController:
                 ["🧠 الاستراتيجيات", "✅ تفعيل ICT", "🚫 تعطيل Scalper"],
                 ["🧭 الرموز", "⚒️ X USD", "🪙 CREBTO"],
                 ["💱 Currency differences"],
+                ["🧩 X A B O USD"],
                 ["ℹ️ المساعدة"],
             ],
             resize_keyboard=True,
@@ -65,7 +66,8 @@ class TelegramController:
             "• /set_symbols XAUUSD.m,BRENT.m,BTCUSD.m,ETHUSD.m\n"
             "• زر ⚒️ X USD: معادن عالية السيولة\n"
             "• زر 🪙 CREBTO: عملات رقمية عالية السيولة\n"
-            "• زر 💱 Currency differences: أزواج فوركس عالية السيولة\n\n"
+            "• زر 💱 Currency differences: أزواج فوركس عالية السيولة\n"
+            "• زر 🧩 X A B O USD: سلة مختلطة (معادن+نفط+فوركس+كريبتو مقابل الدولار)\n\n"
             "*الأوامر اليدوية:*\n"
             "• /buy SYMBOL LOT\n"
             "• /sell SYMBOL LOT\n"
@@ -156,6 +158,9 @@ class TelegramController:
             return await self.cmd_set_symbols(update, context)
         if txt == '💱 Currency differences':
             context.args = ['EURUSD.m,GBPUSD.m,USDJPY.m,AUDUSD.m,USDCAD.m']
+            return await self.cmd_set_symbols(update, context)
+        if txt == '🧩 X A B O USD':
+            context.args = ['XAUUSD.m,XAGUSD.m,BRENT.m,EURUSD.m,BTCUSD.m,ETHUSD.m,USDJPY.m,AUDUSD.m,USDCAD.m,GBPUSD.m']
             return await self.cmd_set_symbols(update, context)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
