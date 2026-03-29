@@ -54,6 +54,12 @@ class TelegramController:
             "• /auto_on\n"
             "• /auto_off\n"
             "• /report\n"
+            "• /today\n"
+            "• /risk\n"
+            "• /set_mode safe|normal|aggressive\n"
+            "• /strategies\n"
+            "• /enable smc_ict\n"
+            "• /disable scalper\n"
             "• /symbols\n"
             "• /set_symbols XAUUSD.m,BRENT.m,BTCUSD.m,ETHUSD.m\n\n"
             "أو استخدم الأزرار الجاهزة بالأسفل.",
@@ -214,6 +220,39 @@ class TelegramController:
             return await self._reject(update)
         await update.message.reply_text(self.callbacks["symbols"]())
 
+    async def cmd_risk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["risk"]())
+
+    async def cmd_set_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        mode = context.args[0] if context.args else ""
+        await update.message.reply_text(self.callbacks["set_risk_mode"](mode))
+
+    async def cmd_today(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["today"]())
+
+    async def cmd_strategies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        await update.message.reply_text(self.callbacks["strategies"]())
+
+    async def cmd_enable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        name = context.args[0] if context.args else ""
+        await update.message.reply_text(self.callbacks["enable_strategy"](name))
+
+    async def cmd_disable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return await self._reject(update)
+        name = context.args[0] if context.args else ""
+        await update.message.reply_text(self.callbacks["disable_strategy"](name))
+
     async def cmd_set_symbols(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return await self._reject(update)
@@ -243,6 +282,12 @@ class TelegramController:
         self.app.add_handler(CommandHandler("auto_on", self.cmd_auto_on))
         self.app.add_handler(CommandHandler("auto_off", self.cmd_auto_off))
         self.app.add_handler(CommandHandler("report", self.cmd_report))
+        self.app.add_handler(CommandHandler("today", self.cmd_today))
+        self.app.add_handler(CommandHandler("risk", self.cmd_risk))
+        self.app.add_handler(CommandHandler("set_mode", self.cmd_set_mode))
+        self.app.add_handler(CommandHandler("strategies", self.cmd_strategies))
+        self.app.add_handler(CommandHandler("enable", self.cmd_enable))
+        self.app.add_handler(CommandHandler("disable", self.cmd_disable))
         self.app.add_handler(CommandHandler("symbols", self.cmd_symbols))
         self.app.add_handler(CommandHandler("set_symbols", self.cmd_set_symbols))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_button_text))

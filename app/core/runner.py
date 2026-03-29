@@ -35,7 +35,10 @@ class TradingRunner:
         self.last_auto_ts = 0.0
         self.last_no_trade_notify_ts = 0.0
         self.watch_symbols = [s.strip() for s in str(settings.watch_symbols or '').split(',') if s.strip()]
+        self.risk_mode = (settings.risk_mode or "normal").lower().strip()
         self.price_history = defaultdict(lambda: deque(maxlen=200))
+        self.strategy_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "n": 0})
+        self.open_trade_ctx = {}  # ticket -> context
         self.day_start_balance = None
         self.day_key = datetime.now(timezone.utc).date().isoformat()
         self.last_dd_alert_ts = 0.0
@@ -60,6 +63,12 @@ class TradingRunner:
                 "report": self._report,
                 "symbols": self._symbols_text,
                 "set_symbols": self._set_symbols,
+                "risk": self._risk_text,
+                "set_risk_mode": self._set_risk_mode,
+                "today": self._today,
+                "strategies": self._strategies,
+                "enable_strategy": self._enable_strategy,
+                "disable_strategy": self._disable_strategy,
             },
         )
         self.risk = RiskEngine(
@@ -94,9 +103,14 @@ class TradingRunner:
             self.strategies.append(AdaptiveWeightingStrategy())
         if settings.enable_london_ny_session:
             self.strategies.append(LondonNySessionStrategy())
+        if settings.enable_sr_fvg:
+            self.strategies.append(self.sr_fvg_strategy)
+        self.strategies.append(self.ict_strategy)
+        self.strategies.append(self.signal_strategy)
+        self.strategy_enabled = {s.name: True for s in self.strategies}
 
     def _status_text(self) -> str:
-        return f"mode={self.mode} | paused={self.paused} | auto={self.auto_enabled} | strategies={len(self.strategies)}"
+        return f"mode={self.mode} | paused={self.paused} | auto={self.auto_enabled} | risk_mode={self.risk_mode} | strategies={len(self.strategies)}"
 
     def _positions_text(self) -> str:
         positions = self.broker.get_positions()
@@ -156,13 +170,15 @@ class TradingRunner:
     def _report(self) -> str:
         bal = self.broker.get_balance()
         pnl = self.broker.get_pnl()
+        today = self._today()
         return (
-            f"Report\n"
+            f"Daily Summary\n"
             f"balance={bal.get('balance')} {bal.get('currency')}\n"
             f"equity={bal.get('equity')}\n"
             f"positions={pnl.get('positions')}\n"
             f"open_pnl={pnl.get('open_pnl')}\n"
-            f"auto={self.auto_enabled}"
+            f"auto={self.auto_enabled} | risk_mode={self.risk_mode}\n"
+            f"{today}"
         )
 
     def _symbols_text(self) -> str:
@@ -175,6 +191,54 @@ class TradingRunner:
         self.watch_symbols = syms
         self.audit.log("set_symbols", {"watch_symbols": self.watch_symbols})
         return "✅ watch_symbols=" + ",".join(self.watch_symbols)
+
+    def _risk_text(self) -> str:
+        aggressive = self.risk_mode == "aggressive"
+        vol = 0.02 if aggressive else 0.01
+        risk_usd = vol * 500
+        reward_usd = risk_usd * 3
+        return f"risk_mode={self.risk_mode} | volume={vol} | risk=${risk_usd:.2f} | reward=${reward_usd:.2f} | RR=1:3"
+
+    def _set_risk_mode(self, mode: str) -> str:
+        m = (mode or "").lower().strip()
+        if m not in {"safe", "normal", "aggressive"}:
+            return "Use: /set_mode safe|normal|aggressive"
+        self.risk_mode = m
+        self.audit.log("set_risk_mode", {"mode": m})
+        return f"✅ risk mode set to {m}"
+
+    def _today(self) -> str:
+        bal = self.broker.get_balance()
+        cur = float(bal.get("balance", 0.0) or 0.0)
+        base = float(self.day_start_balance or cur)
+        delta = cur - base
+        pct = (delta / base * 100.0) if base > 0 else 0.0
+        return f"today pnl=${delta:.2f} ({pct:.2f}%) | baseline=${base:.2f} | balance=${cur:.2f}"
+
+    def _strategies(self) -> str:
+        lines = ["strategies:"]
+        for s in self.strategies:
+            st = self.strategy_stats.get(s.name, {"wins": 0, "losses": 0, "n": 0})
+            en = self.strategy_enabled.get(s.name, True)
+            wr = (st["wins"] / st["n"] * 100.0) if st["n"] else 0.0
+            lines.append(f"- {s.name}: {'ON' if en else 'OFF'} | n={st['n']} | wr={wr:.1f}%")
+        return "\n".join(lines)
+
+    def _enable_strategy(self, name: str) -> str:
+        n = (name or "").strip().lower()
+        if n not in self.strategy_enabled:
+            return f"unknown strategy: {n}"
+        self.strategy_enabled[n] = True
+        self.audit.log("enable_strategy", {"strategy": n})
+        return f"✅ enabled {n}"
+
+    def _disable_strategy(self, name: str) -> str:
+        n = (name or "").strip().lower()
+        if n not in self.strategy_enabled:
+            return f"unknown strategy: {n}"
+        self.strategy_enabled[n] = False
+        self.audit.log("disable_strategy", {"strategy": n})
+        return f"🛑 disabled {n}"
 
     def _pause(self):
         self.paused = True
@@ -296,6 +360,74 @@ class TradingRunner:
         return False
 
 
+    async def _manage_open_positions(self, positions: list[dict]):
+        for p in positions:
+            ticket = int(p.get("ticket", 0) or 0)
+            if ticket <= 0:
+                continue
+            ctx = self.open_trade_ctx.get(ticket)
+            if not ctx:
+                continue
+            profit = float(p.get("profit", 0.0) or 0.0)
+            symbol = str(p.get("symbol", ctx.get("symbol", "")))
+            side = "buy" if int(p.get("type", 0)) == 0 else "sell"
+
+            # 1R management
+            if (not ctx.get("breakeven_done")) and profit >= float(ctx.get("risk_usd", 0.0)):
+                be_res = self.broker.set_sl_tp_by_points(
+                    ticket=ticket,
+                    symbol=symbol,
+                    side=side,
+                    sl_points=0.0,
+                    tp_points=float(ctx.get("tp_points", 0.0)),
+                )
+                if be_res.get("ok"):
+                    ctx["breakeven_done"] = True
+                    await self.notifier.send(f"🔒 breakeven moved | #{ticket} {symbol}")
+
+            if (not ctx.get("partial_done")) and profit >= float(ctx.get("risk_usd", 0.0)):
+                close_vol = max(float(ctx.get("volume", 0.01)) * 0.5, 0.01)
+                part_res = self.broker.close_partial(ticket, close_vol)
+                if part_res.get("ok"):
+                    ctx["partial_done"] = True
+                    await self.notifier.send(f"✂️ partial close 50% executed | #{ticket} vol={close_vol}")
+
+            if ctx.get("breakeven_done"):
+                # lightweight trailing approximation: tighten SL with increasing R multiples
+                risk_usd = max(float(ctx.get("risk_usd", 1.0)), 1e-9)
+                r_mult = profit / risk_usd
+                if r_mult >= 1.5:
+                    sl_points = max(float(ctx.get("sl_points", 0.0)) * 0.35, 1.0)
+                    tr_res = self.broker.set_sl_tp_by_points(
+                        ticket=ticket,
+                        symbol=symbol,
+                        side=side,
+                        sl_points=sl_points,
+                        tp_points=float(ctx.get("tp_points", 0.0)),
+                    )
+                    if tr_res.get("ok") and not ctx.get("trailing_announced"):
+                        ctx["trailing_announced"] = True
+                        await self.notifier.send(f"📈 trailing stop active | #{ticket} {symbol}")
+
+        # detect closed positions and update strategy stats
+        open_tickets = {int(p.get("ticket", 0) or 0) for p in positions}
+        for t in list(self.open_trade_ctx.keys()):
+            if t not in open_tickets:
+                c = self.open_trade_ctx.pop(t)
+                st_name = c.get("strategy", "unknown")
+                pnl = float(c.get("last_profit", 0.0) or 0.0)
+                self.strategy_stats[st_name]["n"] += 1
+                if pnl >= 0:
+                    self.strategy_stats[st_name]["wins"] += 1
+                else:
+                    self.strategy_stats[st_name]["losses"] += 1
+                await self.notifier.send(f"✅ trade closed | #{t} strategy={st_name} pnl≈{pnl:.2f}")
+
+        for p in positions:
+            t = int(p.get("ticket", 0) or 0)
+            if t in self.open_trade_ctx:
+                self.open_trade_ctx[t]["last_profit"] = float(p.get("profit", 0.0) or 0.0)
+
     def _build_candles_from_prices(self, prices, chunk=5):
         if len(prices) < chunk:
             return []
@@ -355,6 +487,11 @@ class TradingRunner:
         candles_m5 = self._build_candles_from_prices(series, chunk=5)
         candles_m15 = self._build_candles_from_prices(series, chunk=15)
 
+        atr_pct = 0.0
+        if len(series) >= 20 and series[-1] > 0:
+            atr_proxy = sum(abs(series[i] - series[i - 1]) for i in range(len(series) - 14, len(series))) / 14
+            atr_pct = atr_proxy / series[-1]
+
         return {
             "symbol": symbol,
             "session": session,
@@ -375,6 +512,18 @@ class TradingRunner:
             "last_price": series[-1] if series else 0.0,
             "point_value": point_value,
             "point_size": float(specs.get("point_size", 0.0) or 0.0),
+            "atr_pct": atr_pct,
+            "is_noisy": atr_pct > 0.02,
+            "aggressive_mode": self.risk_mode == "aggressive",
+            "strategy_performance": {
+                k: {
+                    "wins": v.get("wins", 0),
+                    "losses": v.get("losses", 0),
+                    "n": v.get("n", 0),
+                    "win_rate": (v.get("wins", 0) / v.get("n", 1)) if v.get("n", 0) else 0.5,
+                }
+                for k, v in self.strategy_stats.items()
+            },
             "candles_m5": candles_m5,
             "candles_m15": candles_m15,
         }
@@ -400,6 +549,7 @@ class TradingRunner:
                 self._check_daily_drawdown_stop(now)
                 self._check_daily_profit_lock(now)
                 positions = self.broker.get_positions()
+                await self._manage_open_positions(positions)
                 bal = self.broker.get_balance()
                 stats = {
                     "daily_loss_pct": 0,
@@ -414,45 +564,41 @@ class TradingRunner:
                     allowed, reason = self.risk.allow_trade(stats)
                     if not allowed:
                         self.audit.log("risk_block", {"reason": reason})
+                        if (now - self.last_no_trade_notify_ts) >= 60:
+                            self.last_no_trade_notify_ts = now
+                            await self.notifier.send(f"🚫 trade rejected by risk engine: {reason}")
                     else:
                         market = self._build_market_context()
                         regime = self.regime.select(market, self.strategies)
                         self.audit.log("regime", {"active": regime.active_strategy_names, "weights": regime.weights})
 
-                        active = [s for s in self.strategies if s.name in regime.active_strategy_names]
-                        for st in active:
-                            signals = await st.generate(market)
-                            if signals:
-                                self.audit.log(
-                                    "signals",
-                                    {
-                                        "strategy": st.name,
-                                        "count": len(signals),
-                                        "weight": regime.weights.get(st.name, 1.0),
-                                    },
-                                )
+                        active = [s for s in self.strategies if s.name in regime.active_strategy_names and self.strategy_enabled.get(s.name, True)]
 
-                        # simple auto execution gate (phase 4 baseline)
+                        # auto execution with strategy competition by confidence * regime weight
                         if self.auto_enabled:
-                            signals = []
-                            chosen_market = market
+                            best_sig = None
+                            best_market = market
+                            best_strategy = ""
                             if self.mode == "live" and len(positions) == 0 and (now - self.last_auto_ts) >= settings.auto_cooldown_seconds:
                                 watch_symbols = self.watch_symbols or [settings.auto_default_symbol]
-
                                 for sym in watch_symbols:
-                                    chosen_market = self._build_market_context(sym)
-                                    signals = await self.ict_strategy.generate(chosen_market)
-                                    if not signals:
-                                        signals = await self.sr_fvg_strategy.generate(chosen_market)
-                                    if not signals:
-                                        signals = await self.signal_strategy.generate(chosen_market)
-                                    if signals:
-                                        break
+                                    mk = self._build_market_context(sym)
+                                    for st in active:
+                                        sigs = await st.generate(mk)
+                                        if not sigs:
+                                            continue
+                                        sig = sigs[0]
+                                        score = float(getattr(sig, 'confidence', 0.0) or 0.0) * float(regime.weights.get(st.name, 1.0))
+                                        self.audit.log("signal_detected", {"strategy": st.name, "symbol": sym, "score": score, "signal": sig.__dict__})
+                                        if (best_sig is None) or (score > best_sig[0]):
+                                            best_sig = (score, sig)
+                                            best_market = mk
+                                            best_strategy = st.name
 
-                                if signals:
-                                    sig = signals[0]
+                                if best_sig:
+                                    _, sig = best_sig
                                     side = sig.side
-                                    symbol = sig.symbol or chosen_market.get('symbol', settings.auto_default_symbol)
+                                    symbol = sig.symbol or best_market.get('symbol', settings.auto_default_symbol)
                                     volume = float(sig.volume)
                                     res = self.broker.open_order(symbol, side, volume)
                                     if res.get("ok") and res.get("order"):
@@ -465,12 +611,27 @@ class TradingRunner:
                                         )
                                         res["sltp"] = sltp_res
 
-                                    self.audit.log("auto_open", {"symbol": symbol, "side": side, "lot": volume, "signal": sig.__dict__, "result": res})
+                                        self.open_trade_ctx[int(res.get("order"))] = {
+                                            "strategy": best_strategy,
+                                            "risk_usd": float(sig.risk_amount_usd),
+                                            "reward_usd": float(sig.reward_amount_usd),
+                                            "sl_points": float(sig.stop_loss_points),
+                                            "tp_points": float(sig.take_profit_points),
+                                            "volume": float(sig.volume),
+                                            "symbol": symbol,
+                                            "breakeven_done": False,
+                                            "partial_done": False,
+                                            "trailing_announced": False,
+                                            "last_profit": 0.0,
+                                        }
+
+                                    self.audit.log("auto_open", {"strategy": best_strategy, "symbol": symbol, "side": side, "lot": volume, "signal": sig.__dict__, "result": res})
                                     self.journal.append("auto_open", res, symbol=symbol, side=side, lot=volume, ticket=res.get("order") or "")
                                     self.last_auto_ts = now
 
                                     meta = sig.meta if isinstance(sig.meta, dict) else {}
                                     reason_parts = [
+                                        f"strategy={best_strategy}",
                                         f"reason={sig.reason}",
                                         f"risk=${sig.risk_amount_usd:.2f}",
                                         f"reward=${sig.reward_amount_usd:.2f}",
@@ -480,19 +641,13 @@ class TradingRunner:
                                     ]
                                     if meta.get('model'):
                                         reason_parts.append(f"Model={meta.get('model')}")
-                                    if meta.get('liquidity'):
-                                        reason_parts.append(f"Liquidity={meta.get('liquidity')}")
-                                    if meta.get('mss'):
-                                        reason_parts.append(f"MSS={meta.get('mss')}")
-                                    if 'support' in meta and 'resistance' in meta:
-                                        reason_parts.append(f"SR({meta.get('support'):.2f}/{meta.get('resistance'):.2f})")
-                                    if isinstance(meta.get('fvg'), dict):
-                                        reason_parts.append(f"FVG-{meta['fvg'].get('type')}")
                                     reason = ' | '.join(reason_parts)
-                                    await self.notifier.send(f"🤖 auto_open ({side} {symbol}) lot={volume}\n{reason}\nresult: {res}")
+                                    await self.notifier.send(f"📡 signal detected -> {best_strategy} {side} {symbol}\n🤖 auto_open lot={volume}\n{reason}\nresult: {res}")
+                                    if not res.get("ok"):
+                                        await self.notifier.send(f"🚫 trade rejected by execution/risk path | {res}")
 
-                            if not signals and (now - self.last_no_trade_notify_ts) >= max(settings.auto_cooldown_seconds, 60):
-                                why = self._build_no_trade_reason(chosen_market, len(positions), now)
+                            if not best_sig and (now - self.last_no_trade_notify_ts) >= max(settings.auto_cooldown_seconds, 60):
+                                why = self._build_no_trade_reason(best_market, len(positions), now)
                                 self.last_no_trade_notify_ts = now
                                 self.audit.log("auto_skip", {"reason": why})
                                 await self.notifier.send(f"⏸ تخطي دخول تلقائي: {why}")

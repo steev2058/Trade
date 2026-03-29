@@ -198,6 +198,11 @@ class MT5Adapter:
             return self._bridge_send('/bridge/command/close', {"ticket": int(ticket)})
         return {"ok": False, "note": "bridge not enabled"}
 
+    def close_partial(self, ticket: int, volume: float) -> dict:
+        if self._bridge_enabled():
+            return self._bridge_send('/bridge/command/close_partial', {"ticket": int(ticket), "volume": float(volume)})
+        return {"ok": False, "note": "bridge not enabled"}
+
     def set_sl_tp(self, ticket: int, sl: float, tp: float) -> dict:
         if self._bridge_enabled():
             return self._bridge_send('/bridge/command/sl_tp', {"ticket": int(ticket), "sl": float(sl), "tp": float(tp)})

@@ -78,6 +78,9 @@ def get_snapshot():
                 "type": int(p.type),
                 "volume": float(p.volume),
                 "price_open": float(p.price_open),
+                "price_current": float(getattr(p, 'price_current', 0.0)),
+                "sl": float(getattr(p, 'sl', 0.0)),
+                "tp": float(getattr(p, 'tp', 0.0)),
                 "profit": float(p.profit),
             }
             for p in positions
@@ -214,6 +217,69 @@ def open_order(symbol: str, side: str, lot: float):
     }
 
 
+def close_partial(ticket: int, volume: float):
+    positions = mt5.positions_get(ticket=int(ticket)) or []
+    if not positions:
+        return {"ok": False, "error": "ticket_not_found", "ticket": int(ticket)}
+
+    p = positions[0]
+    symbol = p.symbol
+    mt5.symbol_select(symbol, True)
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return {"ok": False, "error": "no_tick", "ticket": int(ticket), "symbol": symbol}
+
+    req_vol = max(0.0, min(float(volume), float(p.volume)))
+    if req_vol <= 0:
+        return {"ok": False, "error": "invalid_volume", "ticket": int(ticket)}
+
+    is_buy = int(p.type) == 0
+    order_type = mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY
+    price = tick.bid if is_buy else tick.ask
+
+    fill_candidates = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is not None and hasattr(symbol_info, 'filling_mode'):
+        fm = int(symbol_info.filling_mode)
+        if fm in fill_candidates:
+            fill_candidates = [fm] + [x for x in fill_candidates if x != fm]
+
+    last_ret = None
+    for fill_mode in fill_candidates:
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(req_vol),
+            "type": order_type,
+            "position": int(p.ticket),
+            "price": float(price),
+            "deviation": 20,
+            "magic": 987654,
+            "comment": "bridge_close_partial",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": fill_mode,
+        }
+        res = mt5.order_send(req)
+        last_ret = res
+        if res is not None and int(getattr(res, 'retcode', -1)) == int(mt5.TRADE_RETCODE_DONE):
+            return {
+                "ok": True,
+                "retcode": int(getattr(res, 'retcode', -1)),
+                "comment": str(getattr(res, 'comment', 'done')),
+                "ticket": int(ticket),
+                "symbol": symbol,
+                "closed_volume": float(req_vol),
+            }
+
+    return {
+        "ok": False,
+        "retcode": int(getattr(last_ret, 'retcode', -1)) if last_ret is not None else -1,
+        "comment": str(getattr(last_ret, 'comment', 'order_send_failed')) if last_ret is not None else 'order_send_failed',
+        "ticket": int(ticket),
+        "symbol": symbol,
+    }
+
+
 def close_ticket(ticket: int):
     positions = mt5.positions_get(ticket=int(ticket)) or []
     if not positions:
@@ -316,6 +382,8 @@ def main():
                     result = open_order(str(data.get('symbol','')), str(data.get('side','')), float(data.get('lot', 0.01)))
                 elif c == "close":
                     result = close_ticket(int(data.get('ticket', 0)))
+                elif c == "close_partial":
+                    result = close_partial(int(data.get('ticket', 0)), float(data.get('volume', 0)))
                 elif c == "sl_tp":
                     result = modify_sl_tp(int(data.get('ticket', 0)), float(data.get('sl', 0)), float(data.get('tp', 0)))
                 if result is not None:

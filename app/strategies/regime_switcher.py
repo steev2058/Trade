@@ -10,37 +10,48 @@ class RegimeDecision:
 
 
 class RegimeSwitcher:
-    """Selects and weights strategies by volatility/session/news context."""
+    """Selects strategy set by session, volatility, structure and recent performance."""
 
     def select(self, market: dict, candidates: list[Strategy]) -> RegimeDecision:
         name_to_strategy = {s.name: s for s in candidates}
-        volatility = market.get("volatility", "medium")
         session = market.get("session", "off_hours")
-        news_high_impact = market.get("news_high_impact", False)
+        volatility = float(market.get("atr_pct", 0.0) or 0.0)
+        trend_strength = abs(float(market.get("ema9", 0.0) - market.get("ema21", 0.0) or 0.0))
+        noisy = bool(market.get("is_noisy", False))
+        perf = market.get("strategy_performance", {}) or {}
 
         weights: dict[str, float] = {}
 
-        if "news" in name_to_strategy:
-            weights["news"] = 1.0 if news_high_impact else 0.2
+        for name in name_to_strategy:
+            base = 0.35
+            if name == "smc_ict":
+                base = 0.9 if session in {"london", "new_york", "london_ny_overlap"} else 0.2
+                if noisy:
+                    base -= 0.2
+            elif name == "scalper":
+                base = 0.75 if session in {"london", "london_ny_overlap", "new_york"} and volatility < 0.012 else 0.25
+                if noisy:
+                    base -= 0.15
+            elif name == "london_ny_session":
+                base = 0.9 if session in {"london", "london_ny_overlap", "new_york"} else 0.1
+            elif name == "news":
+                base = 0.15 if market.get("news_high_impact", False) else 0.0
+            elif name == "adaptive_weighting":
+                base = 0.6
 
-        if "scalper" in name_to_strategy:
-            if news_high_impact:
-                weights["scalper"] = 0.0
-            elif volatility in {"low", "medium"}:
-                weights["scalper"] = 0.8
-            else:
-                weights["scalper"] = 0.2
+            # favor trending regimes for structure strategies
+            if name in {"smc_ict", "london_ny_session"}:
+                base += 0.1 if trend_strength > 0 else 0
 
-        if "smc_ict" in name_to_strategy:
-            weights["smc_ict"] = 0.7 if session in {"london", "new_york", "london_ny_overlap"} else 0.3
+            p = perf.get(name, {})
+            wr = float(p.get("win_rate", 0.5) or 0.5)
+            n = int(p.get("n", 0) or 0)
+            if n >= 5:
+                base *= 0.8 + min(max((wr - 0.5) * 1.2, -0.3), 0.3)
 
-        if "london_ny_session" in name_to_strategy:
-            weights["london_ny_session"] = 0.9 if session == "london_ny_overlap" else 0.1
+            weights[name] = max(0.0, min(base, 1.2))
 
-        if "adaptive_weighting" in name_to_strategy:
-            weights["adaptive_weighting"] = 0.6
-
-        active = [name for name, weight in weights.items() if weight >= 0.25]
+        active = [name for name, w in weights.items() if w >= 0.3]
         if not active:
             active = [s.name for s in candidates]
             weights = {s.name: 1.0 for s in candidates}
